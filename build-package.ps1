@@ -11,7 +11,7 @@
        dist.nuget.org into tools\ (gitignored).
     4. Packs Myscotek.DataCopier.nuspec into dist\ (gitignored).
     5. Unzips the package into a temporary folder and fails unless it holds exactly the plugin
-       (lib/net48/Plugins/MyscotekDataCopier.dll, identical to the build output), the icon and NuGet's
+       (lib/net48/Plugins/MyscotekDataCopier.dll, identical to the build output), and NuGet's
        own metadata files: XrmToolBox provides every other assembly the tool uses.
 
     Publishing (nuget push, the Tool Library, the GitHub release) is done by hand afterwards.
@@ -42,9 +42,9 @@ $distDir   = Join-Path $root 'dist'
 $toolsDir  = Join-Path $root 'tools'
 $packageId = 'Myscotek.DataCopier'
 
-# The package content besides NuGet's own parts: the plugin and the icon.
+# The package content besides NuGet's own parts: the plugin only (the icon is served from GitHub via iconUrl).
 $pluginEntry = 'lib/net48/Plugins/MyscotekDataCopier.dll'
-$payload     = @($pluginEntry, 'images/icon-128.png')
+$payload     = @($pluginEntry)
 
 function Test-NuGetPart([string]$entry) {
     # What nuget pack adds to every package (and a signature, should the package ever be signed).
@@ -135,7 +135,7 @@ try {
     }
     if ($problems.Count -gt 0) {
         $problems | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
-        throw 'Package check failed: the package must hold only the plugin DLL, its icon and NuGet metadata.'
+        throw 'Package check failed: the package must hold only the plugin DLL, and NuGet metadata.'
     }
 }
 finally {

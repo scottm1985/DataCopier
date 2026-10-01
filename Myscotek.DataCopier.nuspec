@@ -12,9 +12,9 @@
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <license type="expression">MIT</license>
     <projectUrl>https://github.com/scottm1985/DataCopier</projectUrl>
-    <!-- The Tool Library shows iconUrl; NuGet clients show the packed icon (iconUrl alone is deprecated). -->
+    <!-- iconUrl ONLY: with a packed <icon>, nuget.org reports its own extensionless icon endpoint and the
+         XrmToolBox portal then fails validation with "Logo Url is not valid". NuGet warns NU5048; ignore it. -->
     <iconUrl>https://raw.githubusercontent.com/scottm1985/DataCopier/main/images/icon-128.png</iconUrl>
-    <icon>images/icon-128.png</icon>
     <repository type="git" url="https://github.com/scottm1985/DataCopier" />
     <summary>Copies selected Dataverse / Dynamics 365 records to another environment with the same GUIDs, with the records their lookups point at and, optionally, their child records and N:N associations.</summary>
     <description>
@@ -56,6 +56,5 @@
     <!-- XrmToolBox installs lib\net48\Plugins\* into its Plugins folder. Only the tool's own assembly
          ships: XrmToolBox provides the XrmToolBox, McTools, Dataverse SDK and Newtonsoft assemblies. -->
     <file src="src\MyscotekDataCopier\bin\Release\MyscotekDataCopier.dll" target="lib\net48\Plugins" />
-    <file src="images\icon-128.png" target="images\" />
   </files>
 </package>
