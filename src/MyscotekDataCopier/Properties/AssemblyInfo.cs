@@ -16,6 +16,6 @@ using System.Runtime.InteropServices;
 // Myscotek.DataCopier.nuspec: the XrmToolBox Tool Library compares the package version with the
 // assembly version (a mismatch shows a never-ending update), and XrmToolBox re-reads a plugin's
 // metadata only when its AssemblyVersion changes. build-package.ps1 refuses to pack a mismatch.
-[assembly: AssemblyVersion("1.2026.10.3")]
-[assembly: AssemblyFileVersion("1.2026.10.3")]
-[assembly: AssemblyInformationalVersion("1.2026.10.3")]
+[assembly: AssemblyVersion("1.2026.10.4")]
+[assembly: AssemblyFileVersion("1.2026.10.4")]
+[assembly: AssemblyInformationalVersion("1.2026.10.4")]
