@@ -67,6 +67,44 @@ namespace MyscotekDataCopier.Tests.Fakes
             return this;
         }
 
+        /// <summary>
+        /// Adds an N:N relationship to both of its entities (once to a self-referential one; a side not
+        /// defined yet is skipped), and defines its intersect entity (IsIntersect, primary id
+        /// "{intersect}id", no primary name, the two intersect attributes) when it is not there yet.
+        /// </summary>
+        public FakeSchemaProvider ManyToMany(string schemaName, string intersectEntity, string entity1, string entity1Attribute,
+                                             string entity2, string entity2Attribute, bool custom = false)
+        {
+            ManyToManyRelationship Relationship() => new ManyToManyRelationship
+            {
+                SchemaName = schemaName,
+                IntersectEntity = intersectEntity,
+                Entity1LogicalName = entity1,
+                Entity1IntersectAttribute = entity1Attribute,
+                Entity2LogicalName = entity2,
+                Entity2IntersectAttribute = entity2Attribute,
+                IsCustomRelationship = custom
+            };
+
+            if (_entities.TryGetValue(entity1, out EntitySchemaBuilder first)) first.AddManyToMany(Relationship());
+            if (!string.Equals(entity1, entity2, StringComparison.OrdinalIgnoreCase) && _entities.TryGetValue(entity2, out EntitySchemaBuilder second))
+            {
+                second.AddManyToMany(Relationship());
+            }
+            if (!_entities.ContainsKey(intersectEntity))
+            {
+                Entity(intersectEntity, primaryName: null).Intersect().Guid(entity1Attribute).Guid(entity2Attribute);
+            }
+            return this;
+        }
+
+        /// <summary>Removes an N:N relationship from one entity (e.g. a destination that does not have it).</summary>
+        public FakeSchemaProvider RemoveManyToMany(string logicalName, string schemaName)
+        {
+            _entities[logicalName].RemoveManyToMany(schemaName);
+            return this;
+        }
+
         /// <summary>A deep copy (e.g. a destination schema that then differs from the source).</summary>
         public FakeSchemaProvider Clone()
         {
@@ -83,6 +121,7 @@ namespace MyscotekDataCopier.Tests.Fakes
         private readonly Dictionary<string, AttributeSchema> _attributes = new Dictionary<string, AttributeSchema>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<int, int> _defaultStatusByState = new Dictionary<int, int>();
         private readonly List<ChildRelationship> _relationships = new List<ChildRelationship>();
+        private readonly List<ManyToManyRelationship> _manyToMany = new List<ManyToManyRelationship>();
 
         internal EntitySchemaBuilder(FakeSchemaProvider owner, string logicalName, string primaryId, string primaryName)
         {
@@ -95,7 +134,8 @@ namespace MyscotekDataCopier.Tests.Fakes
                 DisplayName = logicalName,
                 Attributes = _attributes,
                 DefaultStatusByState = _defaultStatusByState,
-                OneToManyRelationships = _relationships
+                OneToManyRelationships = _relationships,
+                ManyToManyRelationships = _manyToMany
             };
             Attribute(primaryId, AttributeTypeCode.Uniqueidentifier, create: true, update: false);
             if (primaryName != null) String(primaryName);
@@ -253,6 +293,11 @@ namespace MyscotekDataCopier.Tests.Fakes
 
         internal void Remove(string attribute) => _attributes.Remove(attribute);
 
+        internal void AddManyToMany(ManyToManyRelationship relationship) => _manyToMany.Add(relationship);
+
+        internal void RemoveManyToMany(string schemaName) =>
+            _manyToMany.RemoveAll(r => string.Equals(r.SchemaName, schemaName, StringComparison.OrdinalIgnoreCase));
+
         internal EntitySchemaBuilder CloneFor(FakeSchemaProvider owner)
         {
             var copy = new EntitySchemaBuilder(owner, Schema.LogicalName, Schema.PrimaryIdAttribute, Schema.PrimaryNameAttribute);
@@ -283,6 +328,19 @@ namespace MyscotekDataCopier.Tests.Fakes
                     ParentEntity = r.ParentEntity,
                     ChildEntity = r.ChildEntity,
                     ChildLookupAttribute = r.ChildLookupAttribute,
+                    IsCustomRelationship = r.IsCustomRelationship
+                });
+            }
+            foreach (ManyToManyRelationship r in _manyToMany)
+            {
+                copy._manyToMany.Add(new ManyToManyRelationship
+                {
+                    SchemaName = r.SchemaName,
+                    IntersectEntity = r.IntersectEntity,
+                    Entity1LogicalName = r.Entity1LogicalName,
+                    Entity1IntersectAttribute = r.Entity1IntersectAttribute,
+                    Entity2LogicalName = r.Entity2LogicalName,
+                    Entity2IntersectAttribute = r.Entity2IntersectAttribute,
                     IsCustomRelationship = r.IsCustomRelationship
                 });
             }

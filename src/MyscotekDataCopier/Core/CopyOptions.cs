@@ -48,13 +48,18 @@ namespace MyscotekDataCopier.Core
         public bool CopyLookups { get; set; } = true;
 
         /// <summary>
-        /// "Create related records for 1:N relationships (subgrids)" (SPEC 5.10). When true, the child
-        /// records of every selected record - and, recursively, of those children - are copied too,
-        /// through the relationships <see cref="ChildRelationshipSelector"/> chooses. Default false.
+        /// "Create related records for 1:N and N:N relationships (subgrids)" (SPEC 5.10). When true, the
+        /// child records of every selected record - and, recursively, of those children - are copied too,
+        /// through the 1:N relationships <see cref="ChildRelationshipSelector"/> chooses; and, when the
+        /// selector is an <see cref="IRelationshipSelector"/>, the records associated with them through
+        /// the N:N relationships it chooses (peers: created when missing, then associated). Default false.
         /// </summary>
         public bool CopyChildren { get; set; }
 
-        /// <summary>Chooses the 1:N relationships followed when <see cref="CopyChildren"/> is on; null means no child records.</summary>
+        /// <summary>
+        /// Chooses the relationships followed when <see cref="CopyChildren"/> is on: the 1:N ones, and the
+        /// N:N ones too when it is an <see cref="IRelationshipSelector"/>; null means nothing is followed.
+        /// </summary>
         public IChildRelationshipSelector ChildRelationshipSelector { get; set; }
 
         /// <summary>

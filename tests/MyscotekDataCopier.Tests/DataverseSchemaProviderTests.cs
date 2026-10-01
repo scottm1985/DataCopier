@@ -77,6 +77,33 @@ namespace MyscotekDataCopier.Tests
         }
 
         [Fact]
+        public void FromMetadata_maps_the_many_to_many_relationships_with_the_entity_on_either_side()
+        {
+            EntityMetadata metadata = AccountMetadata()
+                .With("ManyToManyRelationships", new[]
+                {
+                    ManyToMany("accountleads_association", "accountleads", "account", "accountid", "lead", "leadid"),
+                    ManyToMany("new_matter_account", "new_matter_account", "new_matter", "new_matterid", "account", "accountid", custom: true),
+                    ManyToMany("new_account_account", "new_account_account", "account", "accountidone", "account", "accountidtwo", custom: true),
+                    ManyToMany("new_incomplete", "new_incomplete", "account", "accountid", "lead", null),   // no side-2 attribute: dropped
+                    ManyToMany("new_nointersect", null, "account", "accountid", "lead", "leadid"),          // no intersect entity: dropped
+                    null
+                });
+
+            EntitySchema schema = DataverseSchemaProvider.FromMetadata(metadata);
+
+            Assert.Collection(schema.ManyToManyRelationships,
+                r => Assert.Equal(("accountleads_association", "accountleads", "account", "accountid", "lead", "leadid", false),
+                    (r.SchemaName, r.IntersectEntity, r.Entity1LogicalName, r.Entity1IntersectAttribute, r.Entity2LogicalName, r.Entity2IntersectAttribute,
+                     r.IsCustomRelationship)),
+                r => Assert.Equal(("new_matter_account", "new_matter", "new_matterid", "account", "accountid", true),
+                    (r.SchemaName, r.Entity1LogicalName, r.Entity1IntersectAttribute, r.Entity2LogicalName, r.Entity2IntersectAttribute, r.IsCustomRelationship)),
+                r => Assert.Equal(("new_account_account", true, "accountidone", "accountidtwo"),
+                    (r.SchemaName, r.IsSelfReferential, r.Entity1IntersectAttribute, r.Entity2IntersectAttribute)));
+            Assert.Equal("new_matter", schema.ManyToManyRelationships[1].OtherEntity("account"));
+        }
+
+        [Fact]
         public void FromMetadata_without_relationships_or_plural_name_gives_empty_values()
         {
             EntityMetadata metadata = AccountMetadata().With("OneToManyRelationships", null);
@@ -85,6 +112,7 @@ namespace MyscotekDataCopier.Tests
             EntitySchema schema = DataverseSchemaProvider.FromMetadata(metadata);
 
             Assert.Empty(schema.OneToManyRelationships);
+            Assert.Empty(schema.ManyToManyRelationships);   // AccountMetadata has none
             Assert.Null(schema.DisplayCollectionName);
             Assert.False(schema.IsPrivate);
         }
@@ -252,6 +280,19 @@ namespace MyscotekDataCopier.Tests
                     OneToMany("Account_Tasks", "account", "task", "regardingobjectid")
                 });
         }
+
+        internal static ManyToManyRelationshipMetadata ManyToMany(string schemaName, string intersect, string entity1, string attribute1,
+                                                                  string entity2, string attribute2, bool custom = false) =>
+            new ManyToManyRelationshipMetadata
+            {
+                SchemaName = schemaName,
+                IntersectEntityName = intersect,
+                Entity1LogicalName = entity1,
+                Entity1IntersectAttribute = attribute1,
+                Entity2LogicalName = entity2,
+                Entity2IntersectAttribute = attribute2,
+                IsCustomRelationship = custom
+            };
 
         internal static OneToManyRelationshipMetadata OneToMany(string schemaName, string parent, string child, string lookup, bool custom = false) =>
             new OneToManyRelationshipMetadata

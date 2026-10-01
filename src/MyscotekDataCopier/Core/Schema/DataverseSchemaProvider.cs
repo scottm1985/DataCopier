@@ -49,7 +49,8 @@ namespace MyscotekDataCopier.Core.Schema
                 OrganizationResponse response = _service.Execute(new RetrieveEntityRequest
                 {
                     LogicalName = key,
-                    // Relationships: the 1:N relationships a record's child records are found through (SPEC 5.10).
+                    // Relationships: the 1:N relationships a record's child records are found through and
+                    // the N:N relationships its associated records are found through (SPEC 5.10).
                     EntityFilters = EntityFilters.Entity | EntityFilters.Attributes | EntityFilters.Relationships,
                     RetrieveAsIfPublished = false
                 });
@@ -126,7 +127,8 @@ namespace MyscotekDataCopier.Core.Schema
                 IsVirtual = IsVirtualTable(metadata),
                 Attributes = attributes,
                 DefaultStatusByState = defaultStatusByState,
-                OneToManyRelationships = ChildRelationships(metadata)
+                OneToManyRelationships = ChildRelationships(metadata),
+                ManyToManyRelationships = ManyToManyRelationships(metadata)
             };
         }
 
@@ -148,6 +150,33 @@ namespace MyscotekDataCopier.Core.Schema
                     ParentEntity = string.IsNullOrWhiteSpace(r.ReferencedEntity) ? metadata.LogicalName : r.ReferencedEntity,
                     ChildEntity = r.ReferencingEntity,
                     ChildLookupAttribute = r.ReferencingAttribute,
+                    IsCustomRelationship = r.IsCustomRelationship == true
+                })
+                .ToList()
+                .AsReadOnly();
+        }
+
+        /// <summary>
+        /// The N:N relationships the entity takes part in, in metadata order; entries without a schema
+        /// name, intersect entity, or entity and intersect attribute on either side are left out.
+        /// </summary>
+        private static IReadOnlyList<ManyToManyRelationship> ManyToManyRelationships(EntityMetadata metadata)
+        {
+            ManyToManyRelationshipMetadata[] relationships = metadata.ManyToManyRelationships;
+            if (relationships == null || relationships.Length == 0) return Array.Empty<ManyToManyRelationship>();
+
+            return relationships
+                .Where(r => r != null && !string.IsNullOrWhiteSpace(r.SchemaName) && !string.IsNullOrWhiteSpace(r.IntersectEntityName)
+                            && !string.IsNullOrWhiteSpace(r.Entity1LogicalName) && !string.IsNullOrWhiteSpace(r.Entity1IntersectAttribute)
+                            && !string.IsNullOrWhiteSpace(r.Entity2LogicalName) && !string.IsNullOrWhiteSpace(r.Entity2IntersectAttribute))
+                .Select(r => new ManyToManyRelationship
+                {
+                    SchemaName = r.SchemaName,
+                    IntersectEntity = r.IntersectEntityName,
+                    Entity1LogicalName = r.Entity1LogicalName,
+                    Entity1IntersectAttribute = r.Entity1IntersectAttribute,
+                    Entity2LogicalName = r.Entity2LogicalName,
+                    Entity2IntersectAttribute = r.Entity2IntersectAttribute,
                     IsCustomRelationship = r.IsCustomRelationship == true
                 })
                 .ToList()

@@ -12,10 +12,46 @@ using Xunit;
 
 namespace MyscotekDataCopier.Tests
 {
-    /// <summary>SPEC 5.10: which 1:N relationships may be followed, and which are chosen for a run.</summary>
+    /// <summary>SPEC 5.10: which 1:N and N:N relationships may be followed, and which are chosen for a run.</summary>
     public class ChildRelationshipSelectorTests
     {
         private static readonly ISet<string> NeverCreate = new CopyOptions().NeverCreateEntities;
+
+        /// <summary>
+        /// account with one 1:N relationship and one N:N relationship per N:N eligibility rule, in this
+        /// order: accountleads_association (account on side 1: eligible), new_matter_account (account on
+        /// side 2, custom: eligible), new_account_account (self-referential, custom: eligible), then a
+        /// never-create peer, two excluded peers (role, queue), a virtual and a private peer, a peer whose
+        /// metadata fails, one without metadata and one through a system intersect entity.
+        /// </summary>
+        internal static FakeSchemaProvider ManyToManySchema()
+        {
+            var schema = new FakeSchemaProvider();
+            schema.Entity("account", "name").EntityDisplayName("Account", "Accounts")
+                    .OneToMany("contact_customer_accounts", "contact", "parentcustomerid")
+                .Entity("contact", "fullname").EntityDisplayName("Contact", "Contacts").Customer("parentcustomerid")
+                .Entity("lead", "fullname").EntityDisplayName("Lead", "Leads")
+                .Entity("new_matter", "new_name").EntityDisplayName("Matter", "Matters")
+                .Entity("systemuser", "fullname")
+                .Entity("role", "name")
+                .Entity("queue", "name")
+                .Entity("new_vatrate", "new_name").VirtualTable()
+                .Entity("new_private", "new_name").Private()
+                .Entity("new_broken", "new_name");
+            schema.ManyToMany("accountleads_association", "accountleads", "account", "accountid", "lead", "leadid")
+                .ManyToMany("new_matter_account", "new_matter_account", "new_matter", "new_matterid", "account", "accountid", custom: true)
+                .ManyToMany("new_account_account", "new_account_account", "account", "accountidone", "account", "accountidtwo", custom: true)
+                .ManyToMany("new_account_systemuser", "new_account_systemuser", "account", "accountid", "systemuser", "systemuserid")
+                .ManyToMany("new_account_role", "new_account_role", "account", "accountid", "role", "roleid")
+                .ManyToMany("new_account_queue", "new_account_queue", "account", "accountid", "queue", "queueid")
+                .ManyToMany("new_account_vatrate", "new_account_vatrate", "account", "accountid", "new_vatrate", "new_vatrateid")
+                .ManyToMany("new_account_private", "new_account_private", "account", "accountid", "new_private", "new_privateid")
+                .ManyToMany("new_account_broken", "new_account_broken", "account", "accountid", "new_broken", "new_brokenid")
+                .ManyToMany("new_account_gone", "new_account_gone", "account", "accountid", "new_gone", "new_goneid")
+                .ManyToMany("new_account_members", "teammembership", "account", "accountid", "contact", "contactid");
+            schema.Failures["new_broken"] = new InvalidOperationException("metadata unavailable");
+            return schema;
+        }
 
         /// <summary>account with one 1:N relationship per eligibility rule; the child entities to match.</summary>
         internal static FakeSchemaProvider EligibilitySchema()
@@ -135,6 +171,114 @@ namespace MyscotekDataCopier.Tests
 
             Assert.Empty(selector.GetChildRelationships("account"));
             Assert.Empty(schema.Requests);
+        }
+
+        [Fact]
+        public void Eligible_N_N_relationships_have_the_entity_on_a_side_and_a_creatable_peer_outside_the_system_intersects()
+        {
+            FakeSchemaProvider schema = ManyToManySchema();
+
+            IReadOnlyList<ManyToManyRelationship> eligible = ManyToManyEligibility.GetEligible(schema, "account", NeverCreate);
+
+            // Never-create, role, queue, virtual, private, unreadable and missing peers, and a system intersect, are left out.
+            Assert.Equal(new[] { "accountleads_association", "new_matter_account", "new_account_account" }, eligible.Select(r => r.SchemaName));
+            Assert.Equal(("accountleads", "account", "accountid", "lead", "leadid", false),
+                (eligible[0].IntersectEntity, eligible[0].Entity1LogicalName, eligible[0].Entity1IntersectAttribute,
+                 eligible[0].Entity2LogicalName, eligible[0].Entity2IntersectAttribute, eligible[0].IsCustomRelationship));
+            Assert.Equal("lead", eligible[0].OtherEntity("account"));        // account on side 1
+            Assert.Equal("new_matter", eligible[1].OtherEntity("Account"));  // account on side 2: the peer is side 1
+            Assert.True(eligible[1].IsCustomRelationship);
+            Assert.True(eligible[2].IsSelfReferential);                      // account on both sides: allowed
+            Assert.Equal("account", eligible[2].OtherEntity("account"));
+            Assert.Equal("accountleads_association (account <-> lead)", eligible[0].ToString());
+
+            // The same relationships from the other side; an entity that is not a side of one is not eligible for it.
+            Assert.Equal(new[] { "accountleads_association" }, ManyToManyEligibility.GetEligible(schema, "lead", NeverCreate).Select(r => r.SchemaName));
+            Assert.Equal(new[] { "new_matter_account" }, ManyToManyEligibility.GetEligible(schema, "new_matter", NeverCreate).Select(r => r.SchemaName));
+            Assert.False(ManyToManyEligibility.IsEligible(schema, "contact", eligible[0], NeverCreate));
+            Assert.Null(eligible[0].OtherEntity("contact"));
+            Assert.Empty(ManyToManyEligibility.GetEligible(schema, "new_unknown", NeverCreate));
+            Assert.Empty(ManyToManyEligibility.GetEligible(schema, " ", NeverCreate));
+
+            // The never-create list is the one passed in.
+            Assert.Contains("new_account_systemuser",
+                ManyToManyEligibility.GetEligible(schema, "account", new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Select(r => r.SchemaName));
+        }
+
+        [Fact]
+        public void The_system_intersects_and_the_excluded_peer_entities()
+        {
+            foreach (string intersect in new[] { "systemuserroles", "teamroles", "teamprofiles", "systemuserprofiles", "roleprivileges",
+                                                 "teammembership", "principalobjectaccess" })
+            {
+                Assert.True(ManyToManyEligibility.IsSystemIntersect(intersect), intersect);
+            }
+            foreach (string peer in new[] { "role", "privilege", "fieldsecurityprofile", "queue", "position" })
+            {
+                Assert.True(ManyToManyEligibility.IsExcludedPeerEntity(peer), peer);
+            }
+            Assert.True(ManyToManyEligibility.IsSystemIntersect(" TeamMembership "));
+            Assert.False(ManyToManyEligibility.IsSystemIntersect("accountleads"));
+            Assert.False(ManyToManyEligibility.IsSystemIntersect(null));
+            Assert.False(ManyToManyEligibility.IsExcludedPeerEntity("contact"));
+            Assert.False(ManyToManyEligibility.IsExcludedPeerEntity(null));
+        }
+
+        [Fact]
+        public void An_N_N_relationship_or_intersect_the_destination_lacks_is_not_eligible_against_that_destination()
+        {
+            FakeSchemaProvider source = ManyToManySchema();
+            FakeSchemaProvider destination = source.Clone().RemoveManyToMany("account", "new_matter_account").RemoveEntity("accountleads");
+            ManyToManyRelationship leads = source.GetEntity("account").ManyToManyRelationships[0];
+            ManyToManyRelationship matters = source.GetEntity("account").ManyToManyRelationships[1];
+
+            Assert.Equal(new[] { "new_account_account" },
+                ManyToManyEligibility.GetEligible(source, "account", NeverCreate, destination).Select(r => r.SchemaName));
+            Assert.Equal("its intersect entity accountleads does not exist in destination", ManyToManyEligibility.DestinationProblem(destination, "account", leads));
+            Assert.Equal("it does not exist in destination", ManyToManyEligibility.DestinationProblem(destination, "account", matters));
+            Assert.Equal("account does not exist in destination",
+                ManyToManyEligibility.DestinationProblem(source.Clone().RemoveEntity("account"), "account", leads));
+            Assert.Null(ManyToManyEligibility.DestinationProblem(source, "account", leads));       // all there
+            Assert.Null(ManyToManyEligibility.DestinationProblem(null, "account", leads));         // no destination: nothing to check
+
+            // Metadata the destination cannot return is not held against the relationship.
+            destination.Failures["account"] = new InvalidOperationException("metadata unavailable");
+            Assert.Null(ManyToManyEligibility.DestinationProblem(destination, "account", matters));
+        }
+
+        [Fact]
+        public void A_configured_entity_follows_its_N_N_ticks_however_reached_and_an_unconfigured_one_its_subgrids_except_as_a_peer()
+        {
+            var subgridRequests = new List<string>();
+            var selector = new DefaultChildRelationshipSelector(ManyToManySchema(),
+                entity =>
+                {
+                    subgridRequests.Add(entity);
+                    return entity == "lead" ? new[] { "accountleads_association" } : new[] { "new_account_account" };
+                },
+                new Dictionary<string, ISet<string>>
+                {
+                    ["account"] = new HashSet<string> { "ACCOUNTLEADS_ASSOCIATION", "new_account_systemuser", "contact_customer_accounts" }
+                },
+                NeverCreate);
+
+            // Configured: its eligible ticks, as a selected or child record and as a peer alike; the forms are not read.
+            Assert.Equal(new[] { "accountleads_association" },
+                selector.GetManyToManyRelationships("account", RelationshipContext.SelectedOrChild).Select(r => r.SchemaName));
+            Assert.Equal(new[] { "accountleads_association" }, selector.GetManyToManyRelationships("account", RelationshipContext.Peer).Select(r => r.SchemaName));
+            Assert.Equal(new[] { "contact_customer_accounts" }, selector.GetChildRelationships("account", RelationshipContext.Peer).Select(r => r.SchemaName));
+            Assert.Empty(subgridRequests);
+
+            // Unconfigured: nothing as a peer (without reading the forms), its subgrids otherwise - read once for both kinds.
+            Assert.Empty(selector.GetManyToManyRelationships("lead", RelationshipContext.Peer));
+            Assert.Empty(selector.GetChildRelationships("lead", RelationshipContext.Peer));
+            Assert.Empty(subgridRequests);
+            IReadOnlyList<ManyToManyRelationship> leads = selector.GetManyToManyRelationships("lead", RelationshipContext.SelectedOrChild);
+            Assert.Equal(new[] { "accountleads_association" }, leads.Select(r => r.SchemaName));
+            Assert.Empty(selector.GetChildRelationships("lead"));
+            Assert.Equal(new[] { "lead" }, subgridRequests);
+            Assert.Same(leads, selector.GetManyToManyRelationships("LEAD", RelationshipContext.SelectedOrChild));   // cached per entity and context
+            Assert.False(selector.IsConfigured("lead"));
         }
 
         [Fact]

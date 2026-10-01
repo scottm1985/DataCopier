@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 [assembly: AssemblyTitle("Data Copier")]
-[assembly: AssemblyDescription("Copies selected records from a source to a destination Dataverse / Dynamics 365 environment keeping the same GUIDs, with the records their lookups point at and, optionally, their child records.")]
+[assembly: AssemblyDescription("Copies selected records from a source to a destination Dataverse / Dynamics 365 environment keeping the same GUIDs, with the records their lookups point at and, optionally, their child records and N:N associations.")]
 [assembly: AssemblyProduct("Data Copier")]
 // Required: XrmToolBox reads AssemblyCompany with an unguarded GetCustomAttributes(...)[0] when it
 // builds its plugin manifest; without it the host throws on startup. GenerateAssemblyInfo is off,
@@ -16,6 +16,6 @@ using System.Runtime.InteropServices;
 // Myscotek.DataCopier.nuspec: the XrmToolBox Tool Library compares the package version with the
 // assembly version (a mismatch shows a never-ending update), and XrmToolBox re-reads a plugin's
 // metadata only when its AssemblyVersion changes. build-package.ps1 refuses to pack a mismatch.
-[assembly: AssemblyVersion("1.2026.10.2")]
-[assembly: AssemblyFileVersion("1.2026.10.2")]
-[assembly: AssemblyInformationalVersion("1.2026.10.2")]
+[assembly: AssemblyVersion("1.2026.10.3")]
+[assembly: AssemblyFileVersion("1.2026.10.3")]
+[assembly: AssemblyInformationalVersion("1.2026.10.3")]

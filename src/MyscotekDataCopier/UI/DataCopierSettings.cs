@@ -30,7 +30,10 @@ namespace MyscotekDataCopier.UI
         /// <summary>"Create related records for N:1 relationships (lookups)" (SPEC 5.10): the lookup targets are created first. Default on.</summary>
         public bool CopyLookups { get; set; } = true;
 
-        /// <summary>"Create related records for 1:N relationships (subgrids)" (SPEC 5.10): the child records are copied too. Default off.</summary>
+        /// <summary>
+        /// "Create related records for 1:N and N:N relationships (subgrids)" (SPEC 5.10): the child records
+        /// and the associated records (peers, then their associations) are copied too. Default off.
+        /// </summary>
         public bool CopyChildren { get; set; }
 
         /// <summary>Records per page for Load records / Load more / Load all.</summary>
@@ -46,9 +49,9 @@ namespace MyscotekDataCopier.UI
         public string LastEntity { get; set; }
 
         /// <summary>
-        /// The 1:N relationships chosen in the relationship picker, per source organisation (its URL)
-        /// and entity (SPEC 5.10). An entity without a configured entry follows the subgrids on its
-        /// active main forms.
+        /// The 1:N and N:N relationships chosen in the relationship picker, per source organisation (its
+        /// URL) and entity (SPEC 5.10). An entity without a configured entry follows the subgrids on its
+        /// active main forms - or nothing when its records are reached as peers.
         /// </summary>
         public List<RelationshipSelection> RelationshipSelections { get; set; } = new List<RelationshipSelection>();
 
@@ -123,7 +126,7 @@ namespace MyscotekDataCopier.UI
     }
 
     /// <summary>
-    /// The 1:N relationships chosen for one entity of one source organisation in the relationship
+    /// The 1:N and N:N relationships chosen for one entity of one source organisation in the relationship
     /// picker (SPEC 5.10), as stored in the settings file.
     /// </summary>
     public class RelationshipSelection
@@ -136,12 +139,12 @@ namespace MyscotekDataCopier.UI
 
         /// <summary>
         /// True when the relationships of the entity were chosen in the picker: <see cref="Relationships"/>
-        /// is then followed (empty: no child records). False: the entry is ignored and the entity follows
-        /// the subgrids on its active main forms.
+        /// is then followed (empty: nothing), also for its records reached as peers. False: the entry is
+        /// ignored and the entity follows the subgrids on its active main forms (as a peer: nothing).
         /// </summary>
         public bool Configured { get; set; }
 
-        /// <summary>The ticked relationship schema names.</summary>
+        /// <summary>The ticked relationship schema names: 1:N and N:N alike (schema names are unique).</summary>
         [XmlArrayItem("Relationship")]
         public List<string> Relationships { get; set; } = new List<string>();
     }

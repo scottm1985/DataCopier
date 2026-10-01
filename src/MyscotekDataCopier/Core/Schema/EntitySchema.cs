@@ -35,6 +35,12 @@ namespace MyscotekDataCopier.Core.Schema
         /// </summary>
         public IReadOnlyList<ChildRelationship> OneToManyRelationships = Array.Empty<ChildRelationship>();
 
+        /// <summary>
+        /// The N:N relationships the entity takes part in (as side 1, side 2 or both), in metadata
+        /// order: where the records it is associated with are found (SPEC 5.10). May be empty.
+        /// </summary>
+        public IReadOnlyList<ManyToManyRelationship> ManyToManyRelationships = Array.Empty<ManyToManyRelationship>();
+
         public bool HasStateCode => Attributes != null && Attributes.ContainsKey("statecode");
     }
 }

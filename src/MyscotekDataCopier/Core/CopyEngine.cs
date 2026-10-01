@@ -19,9 +19,10 @@ namespace MyscotekDataCopier.Core
     /// Copies selected records from a source to a destination organisation keeping their GUIDs,
     /// recursively creating the records they point at through N:1 lookups (parents first).
     /// Implements SPEC.md sections 5.3 - 5.6, 5.8 (virtual tables and unverifiable lookups), 5.9
-    /// (state changes and closing states) and 5.10 (relationship options: lookups not copied, and the
-    /// child records reached through 1:N relationships). One instance may run <see cref="Copy"/>
-    /// repeatedly (each run starts with fresh state) but not concurrently.
+    /// (state changes and closing states) and 5.10 (relationship options: lookups not copied, the
+    /// child records reached through 1:N relationships, and the peers reached through N:N relationships
+    /// with their associations). One instance may run <see cref="Copy"/> repeatedly (each run starts
+    /// with fresh state) but not concurrently.
     /// </summary>
     public sealed class CopyEngine
     {
@@ -44,6 +45,7 @@ namespace MyscotekDataCopier.Core
         private const string StateCode = "statecode";
         private const string StatusCode = "statuscode";
         private const int ObjectDoesNotExistErrorCode = -2147220969;   // 0x80040217
+        private const int DuplicateRecordErrorCode = -2147220937;      // 0x80040237: "Cannot insert duplicate key."
         private const int MaxNameLength = 100;
         private const int QuoteDraft = 0;
         private const int QuoteActive = 1;
@@ -75,11 +77,17 @@ namespace MyscotekDataCopier.Core
         private Queue<DeferredLookup> _deferredLookups;               // lookups not copied, record not there yet: decided when the selected record's tree is done
         private Queue<PendingState> _pendingStates;
         private HashSet<string> _warnedAttributes;
-        private HashSet<RecordKey> _childrenWalked;                   // records whose child records were listed (once per run)
-        private Dictionary<string, IReadOnlyList<ChildRelationship>> _childRelationships;   // per parent entity: the relationships followed
+        private Dictionary<RecordKey, RelationshipContext> _walked;   // records whose relationships were followed, and as what (once per run)
+        private Dictionary<RecordKey, HashSet<string>> _followed;     // per record: the relationships (1:N and N:N) followed from it
+        private Dictionary<string, IReadOnlyList<ChildRelationship>> _childRelationships;   // per entity and context: the 1:N relationships followed
+        private Dictionary<string, IReadOnlyList<ManyToManyRelationship>> _manyToManyRelationships;   // per entity and context: the N:N ones
+        private HashSet<string> _warnedRelationships;                 // entity|relationship: "not followed" warned once per run
+        private Dictionary<AssociationKey, bool> _associations;       // pairs checked in (or associated by this run in) the destination
+        private HashSet<string> _uncheckedRelationships;              // N:N relationships whose destination intersect could not be queried
         private List<string> _errors;
         private int _selectedIndex, _selectedTotal;
         private int _created, _updated, _skippedExisting, _failed, _lookupsBlanked, _lookupsBackfilled, _stateChanges, _childRecordsFound;
+        private int _peerRecordsFound, _associationsCreated, _associationsSkipped, _associationsFailed;
         private string _currentRecord;
         private IProgress<CopyProgress> _progress;
         private CancellationToken _cancellationToken;
@@ -258,20 +266,25 @@ namespace MyscotekDataCopier.Core
         /// A child record reached through a 1:N relationship (SPEC 5.10): like a lookup target it is
         /// skipped when it exists, but its own child records are copied too.
         /// </param>
-        private EnsureResult EnsureRecord(EntityReference reference, int depth, bool isSelected, bool isChild = false)
+        /// <param name="isPeer">
+        /// A peer reached through an N:N relationship (SPEC 5.10): like a lookup target it is skipped when
+        /// it exists; its own relationships are followed only when its entity is configured in the picker.
+        /// </param>
+        private EnsureResult EnsureRecord(EntityReference reference, int depth, bool isSelected, bool isChild = false, bool isPeer = false)
         {
             var key = new RecordKey(reference.LogicalName, reference.Id);
+            RelationshipContext context = isPeer ? RelationshipContext.Peer : RelationshipContext.SelectedOrChild;
             _states.TryGetValue(key, out RecordState state);
             switch (state)
             {
                 case RecordState.Created:
                 case RecordState.Updated:
-                    if (isSelected || isChild)
+                    if (isSelected || isChild || isPeer)
                     {
                         Log(LogLevel.Info, depth, $"Already copied earlier in this run: {Describe(key, NameOf(key))}");
-                        // First copied as a lookup target, perhaps: as a selected or child record its
-                        // own child records are due now (WalkChildren does each record once).
-                        WalkChildren(key, NameOf(key), depth);
+                        // First copied as a lookup target (or a peer), perhaps: as a selected, child or peer
+                        // record its own relationships are due now (WalkRelationships does each record once).
+                        WalkRelationships(key, NameOf(key), depth, context);
                     }
                     return EnsureResult.Available;
                 case RecordState.Exists:
@@ -279,7 +292,8 @@ namespace MyscotekDataCopier.Core
                     // lookup target must still be overwritten (decision: always update), so carry on.
                     if (!isSelected)
                     {
-                        if (isChild) WalkChildren(key, NameOf(key), depth);   // an existing child is skipped; its children are not
+                        // An existing child or peer is skipped; its own related records are not.
+                        if (isChild || isPeer) WalkRelationships(key, NameOf(key), depth, context);
                         return EnsureResult.Available;
                     }
                     break;
@@ -291,7 +305,7 @@ namespace MyscotekDataCopier.Core
                     return EnsureResult.Deferred;   // cycle: the caller omits the lookup and queues a backfill
             }
 
-            var record = new RecordContext(key, depth, isSelected, isChild, CleanName(reference.Name));
+            var record = new RecordContext(key, depth, isSelected, isChild, isPeer, CleanName(reference.Name));
             try
             {
                 return EnsureRecordCore(record);
@@ -356,8 +370,8 @@ namespace MyscotekDataCopier.Core
                 Remember(key, existingName);
                 Log(LogLevel.Info, depth, $"Exists, skipped {Describe(key, existingName)}");
                 _skippedExisting++;
-                // Not written, but the child records of a selected or child record are still copied (SPEC 5.10).
-                if (record.IsSelected || record.IsChild) WalkChildren(key, existingName, depth);
+                // Not written, but the related records of a selected, child or peer record are still copied (SPEC 5.10).
+                if (record.IsSelected || record.IsChild || record.IsPeer) WalkRelationships(key, existingName, depth, record.Context);
                 return EnsureResult.Available;
             }
 
@@ -406,9 +420,10 @@ namespace MyscotekDataCopier.Core
 
             QueueState(source, record);
             ApplyBackfills(key, depth);
-            // Child records come after the backfills into this record and before the state changes of
-            // the selected record's tree (SPEC 5.10); only for selected and child records.
-            if (record.IsSelected || record.IsChild) WalkChildren(key, record.Name, depth);
+            // Child records, peers and associations come after the backfills into this record and before
+            // the state changes of the selected record's tree (SPEC 5.10); only for selected, child and
+            // peer records.
+            if (record.IsSelected || record.IsChild || record.IsPeer) WalkRelationships(key, record.Name, depth, record.Context);
             return EnsureResult.Available;
         }
 
@@ -914,7 +929,10 @@ namespace MyscotekDataCopier.Core
             _destination.Execute(request);
         }
 
-        /// <summary>Sends a close message (SPEC 5.9): BypassCustomPluginExecution when asked; duplicate detection does not apply.</summary>
+        /// <summary>
+        /// Sends a close message (SPEC 5.9) or an AssociateRequest (5.10): BypassCustomPluginExecution when
+        /// asked; duplicate detection does not apply.
+        /// </summary>
         private void ExecuteMessage(OrganizationRequest request)
         {
             if (_options.BypassCustomPluginExecution) request.Parameters["BypassCustomPluginExecution"] = true;
@@ -1238,39 +1256,62 @@ namespace MyscotekDataCopier.Core
         }
 
         // =====================================================================================
-        // Child records (SPEC 5.10)
+        // Related records: child records (1:N) and peers (N:N) (SPEC 5.10)
         // =====================================================================================
 
         /// <summary>
-        /// Copies the child records of a selected or child record that was just created, updated or
-        /// found existing: for each 1:N relationship chosen for its entity, the source records whose
-        /// lookup points at it - as child records themselves, so recursively. Each record is walked once
-        /// per run (which bounds hierarchies and cycles); never a never-create or virtual record, and
-        /// only while <see cref="CopyOptions.CopyChildren"/> is on with a selector.
+        /// Follows the relationships of a selected, child or peer record that was just created, updated
+        /// or found existing, while <see cref="CopyOptions.CopyChildren"/> is on with a selector: first its
+        /// 1:N relationships - the source records whose lookup points at it, copied as child records, so
+        /// recursively - then its N:N relationships - the records associated with it, copied as peers and
+        /// then associated (<see cref="WalkManyToMany"/>). Which relationships depends on how the record was
+        /// reached (<paramref name="context"/>). Each record is walked once per run, which bounds
+        /// hierarchies and cycles - again only when it is reached as a selected or child record after a
+        /// walk as a peer (which may have followed less), and then only through the relationships not
+        /// followed from it yet. Never a never-create or virtual record.
         /// </summary>
-        private void WalkChildren(RecordKey key, string name, int depth)
+        private void WalkRelationships(RecordKey key, string name, int depth, RelationshipContext context)
         {
             if (!_options.CopyChildren || _options.ChildRelationshipSelector == null) return;
-            if (!_childrenWalked.Add(key)) return;
+            if (_walked.TryGetValue(key, out RelationshipContext walked)
+                && (walked == RelationshipContext.SelectedOrChild || context == RelationshipContext.Peer))
+            {
+                return;
+            }
+            _walked[key] = context;
             TargetKind kind = Classify(key.Entity);
             if (kind.NeverCreate || kind.IsVirtual) return;
+            if (!_followed.TryGetValue(key, out HashSet<string> followed))
+            {
+                followed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                _followed[key] = followed;
+            }
 
+            // Every expected failure is handled inside (per relationship, per related record); these only
+            // keep an unexpected one from failing the record itself, which is written already.
             try
             {
-                WalkChildRelationships(key, name, depth);
+                WalkChildRelationships(key, name, depth, context, followed);
             }
             catch (Exception ex) when (!IsCancellation(ex))
             {
-                // Every expected failure is handled below (per relationship, per child record); this
-                // only keeps an unexpected one from failing the record itself, which is written already.
                 Log(LogLevel.Warning, depth, $"Child records of {DescribeOwner(key, name)} not all copied: {ErrorText(ex)}");
+            }
+            try
+            {
+                WalkManyToMany(key, name, depth, context, followed);
+            }
+            catch (Exception ex) when (!IsCancellation(ex))
+            {
+                Log(LogLevel.Warning, depth, $"Associated records of {DescribeOwner(key, name)} not all copied: {ErrorText(ex)}");
             }
         }
 
-        private void WalkChildRelationships(RecordKey key, string name, int depth)
+        private void WalkChildRelationships(RecordKey key, string name, int depth, RelationshipContext context, HashSet<string> followed)
         {
-            foreach (ChildRelationship relationship in ChildRelationshipsOf(key.Entity, depth))
+            foreach (ChildRelationship relationship in ChildRelationshipsOf(key.Entity, context, depth))
             {
+                if (!followed.Add(relationship.SchemaName)) continue;   // followed from this record already (in a walk as a peer)
                 _cancellationToken.ThrowIfCancellationRequested();
                 List<EntityReference> children = ListChildren(relationship, key, name, depth);
                 if (children == null || children.Count == 0) continue;
@@ -1289,20 +1330,26 @@ namespace MyscotekDataCopier.Core
         }
 
         /// <summary>
-        /// The relationships followed from the records of <paramref name="entity"/>, asked of the
-        /// selector once per run. Relationships to a system-excluded, never-create or virtual child
-        /// entity are left out, and one whose child entity the destination does not have is left out
-        /// with a warning. A failing selector is a warning too: the records of that entity then get
-        /// no child records.
+        /// The 1:N relationships followed from the records of <paramref name="entity"/> reached as
+        /// <paramref name="context"/>, asked of the selector once per entity and context per run (a plain
+        /// <see cref="IChildRelationshipSelector"/> answers for selected and child records only).
+        /// Relationships to a system-excluded, never-create or virtual child entity are left out, and one
+        /// whose child entity the destination does not have is left out with a warning (once per run). A
+        /// failing selector is a warning too: the records of that entity then get no child records.
         /// </summary>
-        private IReadOnlyList<ChildRelationship> ChildRelationshipsOf(string entity, int depth)
+        private IReadOnlyList<ChildRelationship> ChildRelationshipsOf(string entity, RelationshipContext context, int depth)
         {
-            if (_childRelationships.TryGetValue(entity, out IReadOnlyList<ChildRelationship> known)) return known;
+            string cacheKey = ContextKey(entity, context);
+            if (_childRelationships.TryGetValue(cacheKey, out IReadOnlyList<ChildRelationship> known)) return known;
 
             IReadOnlyList<ChildRelationship> chosen;
             try
             {
-                chosen = _options.ChildRelationshipSelector.GetChildRelationships(entity) ?? Array.Empty<ChildRelationship>();
+                IChildRelationshipSelector selector = _options.ChildRelationshipSelector;
+                chosen = (selector is IRelationshipSelector relationships ? relationships.GetChildRelationships(entity, context)
+                          : context == RelationshipContext.Peer ? null
+                          : selector.GetChildRelationships(entity))
+                         ?? Array.Empty<ChildRelationship>();
             }
             catch (Exception ex) when (!IsCancellation(ex))
             {
@@ -1323,16 +1370,22 @@ namespace MyscotekDataCopier.Core
                 }
                 if (TryGetSchema(_destinationSchema, child, out bool failed) == null && !failed)
                 {
-                    Log(LogLevel.Warning, depth, $"1:N relationship {relationship.SchemaName} of {entity} not followed: {child} does not exist in destination");
+                    if (_warnedRelationships.Add(entity + "|" + relationship.SchemaName))
+                    {
+                        Log(LogLevel.Warning, depth, $"1:N relationship {relationship.SchemaName} of {entity} not followed: {child} does not exist in destination");
+                    }
                     continue;
                 }
                 followed.Add(relationship);
             }
 
             IReadOnlyList<ChildRelationship> result = followed.AsReadOnly();
-            _childRelationships[entity] = result;
+            _childRelationships[cacheKey] = result;
             return result;
         }
+
+        private static string ContextKey(string entity, RelationshipContext context) =>
+            (context == RelationshipContext.Peer ? "peer|" : "record|") + entity;
 
         /// <summary>
         /// The child records of <paramref name="parent"/> through <paramref name="relationship"/>, read
@@ -1401,6 +1454,303 @@ namespace MyscotekDataCopier.Core
             if (string.IsNullOrEmpty(type) || type == ChildRelationshipEligibility.ActivityPointer || ChildRelationshipEligibility.IsSystemExcluded(type)) return null;
             TargetKind kind = Classify(type);
             return kind.NeverCreate || kind.IsVirtual ? null : new EntityReference(type, id);
+        }
+
+        /// <summary>
+        /// Copies the peers of a selected, child or peer record and associates them with it: for each N:N
+        /// relationship chosen for its entity (and how it was reached), the records associated with it in
+        /// the source - each copied as a peer (created when missing, skipped when it exists; its own
+        /// relationships followed only when its entity is configured), then the pair associated in the
+        /// destination unless it is associated there already (<see cref="AssociatePeer"/>).
+        /// </summary>
+        private void WalkManyToMany(RecordKey key, string name, int depth, RelationshipContext context, HashSet<string> followed)
+        {
+            foreach (ManyToManyRelationship relationship in ManyToManyRelationshipsOf(key.Entity, context, depth))
+            {
+                if (!followed.Add(relationship.SchemaName)) continue;   // followed from this record already (in a walk as a peer)
+                _cancellationToken.ThrowIfCancellationRequested();
+                List<Association> associations = ListAssociations(relationship, key, name, depth);
+                if (associations == null || associations.Count == 0) continue;
+
+                _peerRecordsFound += associations.Count;
+                string peerEntity = relationship.OtherEntity(key.Entity);
+                Log(LogLevel.Info, depth, $"Associated records of {DescribeOwner(key, name)} via {relationship.SchemaName}: " +
+                    $"{associations.Count.ToString(CultureInfo.InvariantCulture)} {peerEntity} {(associations.Count == 1 ? "record" : "records")}");
+                ReportProgress();
+                foreach (Association association in associations)
+                {
+                    _cancellationToken.ThrowIfCancellationRequested();
+                    AssociatePeer(key, name, depth, relationship, association);
+                }
+            }
+        }
+
+        /// <summary>
+        /// The N:N relationships followed from the records of <paramref name="entity"/> reached as
+        /// <paramref name="context"/>, asked of the selector once per entity and context per run (none
+        /// unless it is an <see cref="IRelationshipSelector"/>). Relationships through a system intersect
+        /// entity or to a never-create, excluded or virtual entity are left out; one the destination does
+        /// not have (the relationship or its intersect entity) is left out with a warning, once per run. A
+        /// failing selector is a warning too: the records of that entity then get no associations.
+        /// </summary>
+        private IReadOnlyList<ManyToManyRelationship> ManyToManyRelationshipsOf(string entity, RelationshipContext context, int depth)
+        {
+            if (!(_options.ChildRelationshipSelector is IRelationshipSelector selector)) return Array.Empty<ManyToManyRelationship>();
+            string cacheKey = ContextKey(entity, context);
+            if (_manyToManyRelationships.TryGetValue(cacheKey, out IReadOnlyList<ManyToManyRelationship> known)) return known;
+
+            IReadOnlyList<ManyToManyRelationship> chosen;
+            try
+            {
+                chosen = selector.GetManyToManyRelationships(entity, context) ?? Array.Empty<ManyToManyRelationship>();
+            }
+            catch (Exception ex) when (!IsCancellation(ex))
+            {
+                Log(LogLevel.Warning, depth, $"Could not determine the N:N relationships of {entity}: {ErrorText(ex)}; its associations are not copied");
+                chosen = Array.Empty<ManyToManyRelationship>();
+            }
+
+            var followed = new List<ManyToManyRelationship>();
+            foreach (ManyToManyRelationship relationship in chosen)
+            {
+                if (relationship == null || string.IsNullOrWhiteSpace(relationship.SchemaName) || string.IsNullOrWhiteSpace(relationship.IntersectEntity)
+                    || string.IsNullOrWhiteSpace(relationship.Entity1IntersectAttribute) || string.IsNullOrWhiteSpace(relationship.Entity2IntersectAttribute))
+                {
+                    continue;
+                }
+                string peer = relationship.OtherEntity(entity);
+                if (peer == null) continue;
+                if (ManyToManyEligibility.IsSystemIntersect(relationship.IntersectEntity) || ManyToManyEligibility.IsExcludedPeerEntity(peer)) continue;
+                TargetKind peerKind = Classify(peer);
+                if (peerKind.NeverCreate || peerKind.IsVirtual) continue;
+                string problem = ManyToManyEligibility.DestinationProblem(_destinationSchema, entity, relationship);
+                if (problem != null)
+                {
+                    if (_warnedRelationships.Add(entity + "|" + relationship.SchemaName))
+                    {
+                        Log(LogLevel.Warning, depth, $"N:N relationship {relationship.SchemaName} of {entity} not followed: {problem}");
+                    }
+                    continue;
+                }
+                followed.Add(relationship);
+            }
+
+            IReadOnlyList<ManyToManyRelationship> result = followed.AsReadOnly();
+            _manyToManyRelationships[cacheKey] = result;
+            return result;
+        }
+
+        /// <summary>
+        /// The records associated with <paramref name="record"/> through <paramref name="relationship"/>,
+        /// read from the SOURCE intersect entity <see cref="ChildPageSize"/> rows at a time with the paging
+        /// cookie: a QueryExpression for the record's side attribute Equal its id, returning the other
+        /// side's attribute, ordered by it - both sides of a self-referential relationship, each row
+        /// keeping its orientation. Null when a query fails (a warning: the run continues).
+        /// </summary>
+        private List<Association> ListAssociations(ManyToManyRelationship relationship, RecordKey record, string recordName, int depth)
+        {
+            string peerEntity = relationship.OtherEntity(record.Entity);
+            string attribute1 = relationship.Entity1IntersectAttribute.Trim();
+            string attribute2 = relationship.Entity2IntersectAttribute.Trim();
+            var associations = new List<Association>();
+            var seen = new HashSet<AssociationKey>();
+            try
+            {
+                if (IsEntity(relationship.Entity1LogicalName, record.Entity))
+                    ListAssociationsFromSide(relationship, attribute1, attribute2, record, peerEntity, recordIsSide1: true, associations, seen);
+                if (IsEntity(relationship.Entity2LogicalName, record.Entity))
+                    ListAssociationsFromSide(relationship, attribute2, attribute1, record, peerEntity, recordIsSide1: false, associations, seen);
+            }
+            catch (Exception ex) when (!IsCancellation(ex))
+            {
+                Log(LogLevel.Warning, depth, $"Could not list {relationship.SchemaName} associations of {DescribeOwner(record, recordName)}: {ErrorText(ex)}");
+                return null;
+            }
+            return associations;
+        }
+
+        private void ListAssociationsFromSide(ManyToManyRelationship relationship, string recordAttribute, string peerAttribute, RecordKey record,
+                                              string peerEntity, bool recordIsSide1, List<Association> associations, HashSet<AssociationKey> seen)
+        {
+            string intersect = relationship.IntersectEntity.Trim().ToLowerInvariant();
+            int page = 1;
+            string cookie = null;
+            while (true)
+            {
+                _cancellationToken.ThrowIfCancellationRequested();
+                var query = new QueryExpression(intersect)
+                {
+                    ColumnSet = new ColumnSet(peerAttribute),
+                    PageInfo = new PagingInfo { Count = ChildPageSize, PageNumber = page, PagingCookie = cookie }
+                };
+                query.Criteria.AddCondition(recordAttribute, ConditionOperator.Equal, record.Id);
+                query.AddOrder(peerAttribute, OrderType.Ascending);
+
+                EntityCollection result = _source.RetrieveMultiple(query);
+                foreach (Entity row in result?.Entities ?? Enumerable.Empty<Entity>())
+                {
+                    Guid peerId = IdOf(row, peerAttribute);
+                    if (peerId == Guid.Empty) continue;
+                    var pair = new AssociationKey(relationship.SchemaName, recordIsSide1 ? record.Id : peerId, recordIsSide1 ? peerId : record.Id);
+                    if (seen.Add(pair)) associations.Add(new Association(new RecordKey(peerEntity, peerId), recordIsSide1, pair));
+                }
+                if (result == null || !result.MoreRecords) break;
+                page++;
+                cookie = result.PagingCookie;
+            }
+        }
+
+        /// <summary>The id an intersect column holds (a Guid; a reference on some system intersects), else Guid.Empty.</summary>
+        private static Guid IdOf(Entity row, string attribute)
+        {
+            if (row == null || !row.Attributes.TryGetValue(attribute, out object value)) return Guid.Empty;
+            switch (value)
+            {
+                case Guid id: return id;
+                case EntityReference reference: return reference.Id;
+                default: return Guid.Empty;
+            }
+        }
+
+        private static bool IsEntity(string name, string entity) =>
+            !string.IsNullOrWhiteSpace(name) && string.Equals(name.Trim(), entity, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// One association found in the source: the peer is copied (as a peer: created when missing,
+        /// skipped when it exists) and then, once it is in the destination, the pair is associated there -
+        /// unless the destination intersect already holds it ("Association exists, skipped"). A peer that
+        /// could not be copied, and an association the destination refuses, are warnings counted as
+        /// failed associations. Dry run: "Would associate", counted as if done.
+        /// </summary>
+        private void AssociatePeer(RecordKey record, string recordName, int depth, ManyToManyRelationship relationship, Association association)
+        {
+            RecordKey peer = association.Peer;
+            EnsureResult result = EnsureRecord(new EntityReference(peer.Entity, peer.Id), depth + 1, isSelected: false, isPeer: true);
+            int logDepth = depth + 1;   // the peer's own depth
+            string pair = $"{DescribeOwner(record, recordName)} <-> {DescribeOwner(peer, NameOf(peer))} via {relationship.SchemaName}";
+            if (result != EnsureResult.Available)
+            {
+                string reason = result == EnsureResult.Deferred ? "is still being copied" : "could not be copied";
+                Log(LogLevel.Warning, logDepth, $"Skipped association {pair}: {peer.Entity} {peer.Id} {reason}");
+                _associationsFailed++;
+                ReportProgress();
+                return;
+            }
+
+            _cancellationToken.ThrowIfCancellationRequested();   // before the write, as before every create
+            AssociationKey key = association.Key;
+            if (AssociationExists(relationship, key, logDepth) == true)
+            {
+                Log(LogLevel.Info, logDepth, $"Association exists, skipped {pair}");
+                _associationsSkipped++;
+                ReportProgress();
+                return;
+            }
+
+            if (_options.DryRun)
+            {
+                Log(LogLevel.Success, logDepth, $"{DryRunPrefix}Would associate {pair}");
+            }
+            else
+            {
+                try
+                {
+                    ExecuteMessage(BuildAssociateRequest(relationship, record, peer, association.RecordIsSide1));
+                }
+                catch (Exception ex) when (!IsCancellation(ex))
+                {
+                    if (IsDuplicateKey(ex))
+                    {
+                        // The destination holds the pair already (its intersect could not be checked first).
+                        _associations[key] = true;
+                        Log(LogLevel.Info, logDepth, $"Association exists, skipped {pair}");
+                        _associationsSkipped++;
+                    }
+                    else
+                    {
+                        Log(LogLevel.Warning, logDepth, $"Association failed {pair}: {ErrorText(ex)}");
+                        _associationsFailed++;
+                    }
+                    ReportProgress();
+                    return;
+                }
+                Log(LogLevel.Success, logDepth, $"Associated {pair}");
+            }
+            _associations[key] = true;
+            _associationsCreated++;
+            ReportProgress();
+        }
+
+        /// <summary>
+        /// Is the pair associated in the destination? A QueryExpression on the destination intersect entity
+        /// for both ids (TopCount 1), cached per pair for the run (an association made by the run counts).
+        /// Null when the intersect cannot be queried: warned once per relationship, whose pairs are then
+        /// associated without a check (the platform refuses a pair that exists: "Cannot insert duplicate key").
+        /// </summary>
+        private bool? AssociationExists(ManyToManyRelationship relationship, AssociationKey key, int logDepth)
+        {
+            if (_associations.TryGetValue(key, out bool known)) return known;
+            if (_uncheckedRelationships.Contains(key.Relationship)) return null;
+
+            string attribute1 = relationship.Entity1IntersectAttribute.Trim();
+            string attribute2 = relationship.Entity2IntersectAttribute.Trim();
+            var query = new QueryExpression(relationship.IntersectEntity.Trim().ToLowerInvariant())
+            {
+                ColumnSet = new ColumnSet(attribute1, attribute2),
+                TopCount = 1
+            };
+            query.Criteria.AddCondition(attribute1, ConditionOperator.Equal, key.Side1);
+            query.Criteria.AddCondition(attribute2, ConditionOperator.Equal, key.Side2);
+            try
+            {
+                bool exists = (_destination.RetrieveMultiple(query)?.Entities?.Count ?? 0) > 0;
+                _associations[key] = exists;
+                return exists;
+            }
+            catch (Exception ex) when (!IsCancellation(ex))
+            {
+                _uncheckedRelationships.Add(key.Relationship);
+                Log(LogLevel.Warning, logDepth, $"Could not check the {relationship.SchemaName} associations in destination: {ErrorText(ex)}; associating without checking");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// The AssociateRequest of one pair: Target the record, RelatedEntities the peer. A self-referential
+        /// relationship needs the role of the target: Target is then the record on side 1 of the source row
+        /// with PrimaryEntityRole Referencing (side 1), so the destination row keeps the source row's
+        /// orientation.
+        /// </summary>
+        private static AssociateRequest BuildAssociateRequest(ManyToManyRelationship relationship, RecordKey record, RecordKey peer, bool recordIsSide1)
+        {
+            var schema = new Relationship(relationship.SchemaName.Trim());
+            RecordKey target = record, related = peer;
+            if (relationship.IsSelfReferential)
+            {
+                schema.PrimaryEntityRole = EntityRole.Referencing;
+                if (!recordIsSide1)
+                {
+                    target = peer;
+                    related = record;
+                }
+            }
+            return new AssociateRequest
+            {
+                Target = new EntityReference(target.Entity, target.Id),
+                Relationship = schema,
+                RelatedEntities = new EntityReferenceCollection { new EntityReference(related.Entity, related.Id) }
+            };
+        }
+
+        /// <summary>The platform refusing a pair that is associated already: "Cannot insert duplicate key" (0x80040237).</summary>
+        internal static bool IsDuplicateKey(Exception ex)
+        {
+            if (!(ex is FaultException)) return false;
+            OrganizationServiceFault detail = (ex as FaultException<OrganizationServiceFault>)?.Detail;
+            if (detail != null && detail.ErrorCode == DuplicateRecordErrorCode) return true;
+            string message = detail?.Message;
+            if (string.IsNullOrEmpty(message)) message = ex.Message ?? string.Empty;
+            return message.IndexOf("Cannot insert duplicate key", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         // =====================================================================================
@@ -1623,6 +1973,10 @@ namespace MyscotekDataCopier.Core
                 LookupsBlanked = _lookupsBlanked,
                 LookupsBackfilled = _lookupsBackfilled,
                 ChildRecordsFound = _childRecordsFound,
+                PeerRecordsFound = _peerRecordsFound,
+                AssociationsCreated = _associationsCreated,
+                AssociationsSkipped = _associationsSkipped,
+                AssociationsFailed = _associationsFailed,
                 CurrentRecord = _currentRecord
             });
         }
@@ -1638,12 +1992,18 @@ namespace MyscotekDataCopier.Core
             _deferredLookups = new Queue<DeferredLookup>();
             _pendingStates = new Queue<PendingState>();
             _warnedAttributes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            _childrenWalked = new HashSet<RecordKey>();
+            _walked = new Dictionary<RecordKey, RelationshipContext>();
+            _followed = new Dictionary<RecordKey, HashSet<string>>();
             _childRelationships = new Dictionary<string, IReadOnlyList<ChildRelationship>>(StringComparer.OrdinalIgnoreCase);
+            _manyToManyRelationships = new Dictionary<string, IReadOnlyList<ManyToManyRelationship>>(StringComparer.OrdinalIgnoreCase);
+            _warnedRelationships = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _associations = new Dictionary<AssociationKey, bool>();
+            _uncheckedRelationships = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             _errors = new List<string>();
             _selectedIndex = 0;
             _selectedTotal = selectedTotal;
             _created = _updated = _skippedExisting = _failed = _lookupsBlanked = _lookupsBackfilled = _stateChanges = _childRecordsFound = 0;
+            _peerRecordsFound = _associationsCreated = _associationsSkipped = _associationsFailed = 0;
             _currentRecord = null;
             _progress = progress;
             _cancellationToken = cancellationToken;
@@ -1660,6 +2020,10 @@ namespace MyscotekDataCopier.Core
             LookupsBackfilled = _lookupsBackfilled,
             StateChanges = _stateChanges,
             ChildRecordsFound = _childRecordsFound,
+            PeerRecordsFound = _peerRecordsFound,
+            AssociationsCreated = _associationsCreated,
+            AssociationsSkipped = _associationsSkipped,
+            AssociationsFailed = _associationsFailed,
             Cancelled = cancelled,
             DryRun = _options.DryRun,
             Elapsed = elapsed,
@@ -1688,6 +2052,42 @@ namespace MyscotekDataCopier.Core
             public bool Equals(RecordKey other) => Id == other.Id && string.Equals(Entity, other.Entity, StringComparison.Ordinal);
             public override bool Equals(object obj) => obj is RecordKey other && Equals(other);
             public override int GetHashCode() => unchecked(((Entity ?? string.Empty).GetHashCode() * 397) ^ Id.GetHashCode());
+        }
+
+        /// <summary>One associated pair of an N:N relationship: the relationship, then the ids on side 1 and side 2.</summary>
+        private readonly struct AssociationKey : IEquatable<AssociationKey>
+        {
+            public AssociationKey(string relationship, Guid side1, Guid side2)
+            {
+                Relationship = (relationship ?? string.Empty).Trim().ToLowerInvariant();
+                Side1 = side1;
+                Side2 = side2;
+            }
+
+            public string Relationship { get; }
+            public Guid Side1 { get; }
+            public Guid Side2 { get; }
+
+            public bool Equals(AssociationKey other) =>
+                Side1 == other.Side1 && Side2 == other.Side2 && string.Equals(Relationship, other.Relationship, StringComparison.Ordinal);
+            public override bool Equals(object obj) => obj is AssociationKey other && Equals(other);
+            public override int GetHashCode() =>
+                unchecked((((Relationship ?? string.Empty).GetHashCode() * 397) ^ Side1.GetHashCode()) * 397 ^ Side2.GetHashCode());
+        }
+
+        /// <summary>A row of a source intersect: the peer, which side the record is on, and the pair.</summary>
+        private sealed class Association
+        {
+            public Association(RecordKey peer, bool recordIsSide1, AssociationKey key)
+            {
+                Peer = peer;
+                RecordIsSide1 = recordIsSide1;
+                Key = key;
+            }
+
+            public RecordKey Peer { get; }
+            public bool RecordIsSide1 { get; }
+            public AssociationKey Key { get; }
         }
 
         private sealed class ExistenceInfo
@@ -1790,12 +2190,13 @@ namespace MyscotekDataCopier.Core
         /// <summary>Everything known about the record one EnsureRecord call is working on.</summary>
         private sealed class RecordContext
         {
-            public RecordContext(RecordKey key, int depth, bool isSelected, bool isChild, string name)
+            public RecordContext(RecordKey key, int depth, bool isSelected, bool isChild, bool isPeer, string name)
             {
                 Key = key;
                 Depth = depth;
                 IsSelected = isSelected;
                 IsChild = isChild;
+                IsPeer = isPeer;
                 Name = name;
             }
 
@@ -1803,6 +2204,11 @@ namespace MyscotekDataCopier.Core
             public int Depth { get; }
             public bool IsSelected { get; }
             public bool IsChild { get; }            // reached through a 1:N relationship (SPEC 5.10)
+            public bool IsPeer { get; }             // reached through an N:N relationship (SPEC 5.10)
+
+            /// <summary>How the record was reached: what its own relationships are chosen by.</summary>
+            public RelationshipContext Context => IsPeer ? RelationshipContext.Peer : RelationshipContext.SelectedOrChild;
+
             public string Name { get; set; }
             public EntitySchema Destination { get; set; }
             public EntitySchema Source { get; set; }

@@ -352,13 +352,15 @@ namespace MyscotekDataCopier.UI
             _toolTip.SetToolTip(_copyLookups,
                 "Ticked: the records the copied records point at through lookups are created first, as deep as needed. " +
                 "Unticked: no lookup target is created or updated - a lookup is kept if its record exists in the destination by the end of the selected record's copy, otherwise left blank.");
-            _copyChildren = NewCheckBox("copyChildrenCheckBox", "Create related records for 1:N relationships (subgrids)");
+            _copyChildren = NewCheckBox("copyChildrenCheckBox", "Create related records for 1:N and N:N relationships (subgrids)");
             _toolTip.SetToolTip(_copyChildren,
                 "Also copy the child records of the selected records (the records pointing at them through the 1:N relationships chosen with Relationships...), " +
-                "and their children in turn. Child records that already exist are skipped. Default: the subgrids on each entity's main forms.");
+                "and their children in turn; and the records associated with them through the N:N relationships chosen there (peers), which are created when " +
+                "missing and then associated. Records and associations that already exist are skipped. Default: the subgrids on each entity's main forms; " +
+                "a peer follows only the relationships ticked for its entity.");
             _relationshipsButton = NewButton("relationshipsButton", "Relationships...", OnRelationshipsClick);
             _toolTip.SetToolTip(_relationshipsButton,
-                "Choose which 1:N relationships are followed, entity by entity (pre-ticked: the subgrids on the active main forms).");
+                "Choose which 1:N and N:N relationships are followed, entity by entity (pre-ticked: the subgrids on the active main forms).");
             _copyLookups.CheckedChanged += OnOptionChanged;
             _copyChildren.CheckedChanged += OnOptionChanged;
 

@@ -124,13 +124,13 @@ namespace MyscotekDataCopier.Tests
                     string log = UiTest.LogText(control);
                     Assert.Contains("] Copying 2 account records from (unnamed connection) to (unnamed connection)", log);
                     Assert.Contains("] Options: dry run on, preserve created on off, bypass custom plugins off, create related records for N:1 relationships (lookups) on, " +
-                                    "create related records for 1:N relationships (subgrids) off; never created: businessunit, organization, systemuser, team, transactioncurrency", log);
+                                    "create related records for 1:N and N:N relationships (subgrids) off; never created: businessunit, organization, systemuser, team, transactioncurrency", log);
                     Assert.DoesNotContain("1:N relationships followed", log);
                     Assert.Contains("] DRY RUN: nothing will be written to the destination.", log);
                     Assert.Contains($"] [DRY RUN] Would create account \"Contoso Ltd\" ({scenario.Accounts[0].Id})", log);
                     Assert.Contains($"] [DRY RUN] Would create account \"Contoso [UK] 50%\" ({scenario.Accounts[1].Id})", log);
                     Assert.Contains("] ---- Summary (dry run - nothing was written): 2 selected records ----", log);
-                    Assert.Contains("]   Created" + new string(' ', 13) + "2", log);
+                    Assert.Contains("]   Created" + new string(' ', 14) + "2", log);
                     Assert.Empty(scenario.Destination.Writes);
                     Assert.Equal("Dry run done: 2 / 2 - created 2, failed 0", UiTestHost.Find<Label>(control, "progressLabel").Text);
                     Assert.False(UiTestHost.Find<Button>(control, "cancelButton").Enabled);
@@ -421,7 +421,7 @@ namespace MyscotekDataCopier.Tests
                     RelationshipSelection saved = Assert.Single(control.Settings.RelationshipSelections);   // only the entity whose ticks changed
                     Assert.Equal((string.Empty, "contact", true), (saved.Organization, saved.Entity, saved.Configured));
                     Assert.Equal(new[] { "contact_customer_contacts" }, saved.Relationships);
-                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains("1:N relationships saved - contact: contact_customer_contacts."), "the saved line");
+                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains("1:N and N:N relationships saved - contact: contact_customer_contacts."), "the saved line");
 
                     // 2. A dry-run copy of one account: its contact (main-form subgrid), then that contact's contact (ticked).
                     UiTestHost.Find<Button>(control, "loadRecordsButton").PerformClick();
@@ -433,17 +433,19 @@ namespace MyscotekDataCopier.Tests
                     UiTestHost.PumpUntil(() => !control.IsBusy && UiTest.LogText(control).Contains("---- Summary"), "the copy");
 
                     string log = UiTest.LogText(control);
-                    Assert.Contains("create related records for N:1 relationships (lookups) on, create related records for 1:N relationships (subgrids) on; never created:", log);
+                    Assert.Contains("create related records for N:1 relationships (lookups) on, create related records for 1:N and N:N relationships (subgrids) on; never created:", log);
                     const string Followed = "] 1:N relationships followed from account (the subgrids on its active main forms): contact_customer_accounts (contact.parentcustomerid)";
                     Assert.Contains(Followed, log);
-                    Assert.Contains("] Other entities reached as child records follow the relationships ticked for them in Relationships..., otherwise the subgrids on their active main forms.", log);
+                    Assert.Contains("] N:N relationships followed from account (the subgrids on its active main forms): none", log);
+                    Assert.Contains(OtherEntitiesLine, log);
                     Assert.InRange(log.IndexOf(Followed, StringComparison.Ordinal), 0, log.IndexOf("] DRY RUN: nothing will be written", StringComparison.Ordinal));
                     Assert.Contains($"] [DRY RUN] Would create account \"Contoso Ltd\" ({scenario.Accounts[0].Id})", log);
                     Assert.Contains("] Children of account \"Contoso Ltd\" via contact_customer_accounts: 1 contact record", log);
                     Assert.Contains($"]   [DRY RUN] Would create contact \"Jane Child\" ({scenario.ChildContact.Id})", log);
                     Assert.Contains("]   Children of contact \"Jane Child\" via contact_customer_contacts: 1 contact record", log);
                     Assert.Contains($"]     [DRY RUN] Would create contact \"Joe Grandchild\" ({scenario.GrandchildContact.Id})", log);
-                    Assert.Contains("]   Child records found 2", log);
+                    Assert.Contains("]   Child records found  2", log);
+                    Assert.DoesNotContain("Peer records found", log);   // the N:N counts only when not zero
                     Assert.Equal("Dry run done: 1 / 1 - created 3, children found 2, failed 0", UiTestHost.Find<Label>(control, "progressLabel").Text);
                     Assert.Empty(scenario.Destination.Writes);
                     Assert.Empty(scenario.Dialogs.Messages);
@@ -484,7 +486,61 @@ namespace MyscotekDataCopier.Tests
                     Assert.Equal(new[] { "account" }, handedIn.Keys);   // this source only
                     Assert.Equal(new[] { "Account_Tasks" }, handedIn["account"]);
                     Assert.Equal(2, control.Settings.RelationshipSelections.Count);   // unchanged
-                    Assert.DoesNotContain("1:N relationships saved", UiTest.LogText(control));
+                    Assert.DoesNotContain("relationships saved", UiTest.LogText(control));
+                    Assert.Empty(scenario.Dialogs.Messages);
+                }
+            });
+        }
+
+        /// <summary>The run header line on the entities other than the selected one (SPEC 6), as logged.</summary>
+        private const string OtherEntitiesLine =
+            "] Other entities reached as child records follow the relationships ticked for them in Relationships..., otherwise the subgrids on their active " +
+            "main forms; records reached through N:N relationships (peers) are created when missing, then associated, and follow only the relationships " +
+            "ticked for their entity.";
+
+        [Fact]
+        public void The_1N_and_N_N_option_is_labelled_logged_in_the_header_and_a_dry_run_copy_associates_a_peer()
+        {
+            var scenario = new UiScenario(includeManyToMany: true);
+            scenario.Settings.CopyChildren = true;
+            UiTestHost.Run(() =>
+            {
+                using (DataCopierControl control = UiTest.NewControl(scenario.Settings, scenario.Save, scenario.Dialogs))
+                {
+                    CheckBox copyChildren = UiTestHost.Find<CheckBox>(control, "copyChildrenCheckBox");
+                    Assert.Equal("Create related records for 1:N and N:N relationships (subgrids)", copyChildren.Text);
+                    Assert.True(copyChildren.Checked);
+
+                    control.UpdateConnection(scenario.Source, null, string.Empty, null);
+                    UiTestHost.PumpUntil(() => !control.IsBusy && UiTestHost.Find<ComboBox>(control, "viewCombo").Items.Count > 0, "the account views");
+                    UiTestHost.Find<Button>(control, "loadRecordsButton").PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 3, "page 1");
+                    ClickCopyCell(UiTestHost.Find<DataGridView>(control, "recordGrid"), 0);   // Contoso Ltd
+                    control.UpdateConnection(scenario.Destination, null, DataCopierControl.DestinationActionName, DataCopierControl.DestinationParameter);
+                    UiTestHost.Find<CheckBox>(control, "dryRunCheckBox").Checked = true;
+                    UiTestHost.Find<Button>(control, "copyButton").PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && UiTest.LogText(control).Contains("---- Summary"), "the copy");
+
+                    // The header: the option, then the 1:N and the N:N relationships of the account (its main-form subgrids), then the rule for the others.
+                    string log = UiTest.LogText(control);
+                    Assert.Contains("create related records for N:1 relationships (lookups) on, create related records for 1:N and N:N relationships (subgrids) on; never created:", log);
+                    Assert.Contains("] 1:N relationships followed from account (the subgrids on its active main forms): contact_customer_accounts (contact.parentcustomerid)", log);
+                    const string Peers = "] N:N relationships followed from account (the subgrids on its active main forms): new_account_contact (contact)";
+                    Assert.Contains(Peers, log);
+                    Assert.Contains(OtherEntitiesLine, log);
+                    Assert.InRange(log.IndexOf(Peers, StringComparison.Ordinal), 0, log.IndexOf("] DRY RUN: nothing will be written", StringComparison.Ordinal));
+
+                    // The copy: the account's child, then its peer - created, then associated (would be: a dry run).
+                    Assert.Contains("] Children of account \"Contoso Ltd\" via contact_customer_accounts: 1 contact record", log);
+                    Assert.Contains("] Associated records of account \"Contoso Ltd\" via new_account_contact: 1 contact record", log);
+                    Assert.Contains($"]   [DRY RUN] Would create contact \"Pat Peer\" ({scenario.PeerContact.Id})", log);
+                    Assert.Contains("]   [DRY RUN] Would associate account \"Contoso Ltd\" <-> contact \"Pat Peer\" via new_account_contact", log);
+                    Assert.InRange(log.IndexOf("] Children of account", StringComparison.Ordinal), 0, log.IndexOf("] Associated records of account", StringComparison.Ordinal));
+                    Assert.Contains("]   Peer records found   1", log);
+                    Assert.Contains("]   Associations created 1", log);
+                    Assert.Equal("Dry run done: 1 / 1 - created 3, children found 1, peers found 1, associated 1, failed 0",
+                        UiTestHost.Find<Label>(control, "progressLabel").Text);
+                    Assert.Empty(scenario.Destination.Writes);
                     Assert.Empty(scenario.Dialogs.Messages);
                 }
             });
@@ -849,16 +905,23 @@ namespace MyscotekDataCopier.Tests
     /// destination for account and contact (the copy engine's metadata). For the 1:N relationships
     /// (SPEC 5.10) the source also holds an active account main form with a contact subgrid, a contact
     /// of the first account and a contact of that contact; other QueryExpressions (child records,
-    /// systemform) are evaluated over the store.
+    /// systemform, intersects) are evaluated over the store. With <c>includeManyToMany</c> account and
+    /// contact also have the N:N relationship <see cref="ManyToManyName"/> (on a second account main form,
+    /// declared on both services; the destination answers the metadata of its intersect entity) and the
+    /// first account is associated with <see cref="PeerContact"/> in the source.
     /// </summary>
     internal sealed class UiScenario
     {
+        /// <summary>The N:N relationship of account and contact with <c>includeManyToMany</c> (also its intersect entity).</summary>
+        public const string ManyToManyName = "new_account_contact";
+
         private static readonly Guid ActiveAccountsViewId = new Guid("5a9e1b1c-0000-0000-0000-000000000001");
         private static readonly Guid PrimaryContactsViewId = new Guid("5a9e1b1c-0000-0000-0000-000000000002");
         private static readonly Guid FollowedAccountsViewId = new Guid("5a9e1b1c-0000-0000-0000-000000000003");
 
-        public UiScenario()
+        public UiScenario(bool includeManyToMany = false)
         {
+            IncludeManyToMany = includeManyToMany;
             string[] names = { "Contoso Ltd", "Contoso [UK] 50%", "Fabrikam", "O'Neil's Bakery", "Northwind*" };
             string[] emails = { "info@contoso.example", "uk@contoso.example", "sales@fabrikam.example", "bakery@oneil.example", "north@wind.example" };
             for (int i = 0; i < names.Length; i++)
@@ -877,14 +940,30 @@ namespace MyscotekDataCopier.Tests
             GrandchildContact = TestData.Record("contact", Guid.NewGuid(), ("fullname", "Joe Grandchild"), ("parentcustomerid", TestData.Ref("contact", ChildContact.Id)));
             Source.Add(GrandchildContact);
             Source.Add(FormSubgridServiceTests.Form("account", 2, 1, FormSubgridServiceTests.Subgrid("contact_customer_accounts")));
+            if (includeManyToMany)
+            {
+                PeerContact = TestData.Record("contact", Guid.NewGuid(), ("fullname", "Pat Peer"));
+                Source.Add(PeerContact);
+                Source.ManyToMany(ManyToManyName, ManyToManyName, "account", "accountid", "contact", "contactid");
+                Destination.ManyToMany(ManyToManyName, ManyToManyName, "account", "accountid", "contact", "contactid");
+                Source.AddAssociation(ManyToManyName, Accounts[0].Id, PeerContact.Id);
+                Source.Add(FormSubgridServiceTests.Form("account", 2, 1, FormSubgridServiceTests.Subgrid(ManyToManyName)));
+            }
 
             Source.ExecuteHandler = OnSourceRequest;
             Source.RetrieveMultipleHandler = OnSourceQuery;
             Destination.ExecuteHandler = request => !(request is RetrieveEntityRequest retrieve) ? null
                 : retrieve.LogicalName == "account" ? AccountMetadata()
-                : retrieve.LogicalName == "contact" ? Metadata(DataverseSchemaProviderTests.ContactMetadata())
+                : retrieve.LogicalName == "contact" ? ContactMetadata()
+                : IncludeManyToMany && retrieve.LogicalName == ManyToManyName ? IntersectMetadata()
                 : null;
         }
+
+        /// <summary>account and contact have the N:N relationship <see cref="ManyToManyName"/> (constructor argument).</summary>
+        public bool IncludeManyToMany { get; }
+
+        /// <summary>With <see cref="IncludeManyToMany"/>: a contact associated with the first account in the source (null otherwise).</summary>
+        public Entity PeerContact { get; }
 
         public FakeOrganizationService Source { get; } = new FakeOrganizationService();
         public FakeOrganizationService Destination { get; } = new FakeOrganizationService();
@@ -953,7 +1032,7 @@ namespace MyscotekDataCopier.Tests
                     MetadataRequests.Add(retrieve.LogicalName);
                     MetadataThreads.Add(Thread.CurrentThread.Name);
                     if (retrieve.LogicalName == "account") return AccountMetadata();
-                    if (retrieve.LogicalName == "contact") return Metadata(DataverseSchemaProviderTests.ContactMetadata());
+                    if (retrieve.LogicalName == "contact") return ContactMetadata();
                     throw FakeOrganizationService.Fault(FakeOrganizationService.ObjectDoesNotExist, "Could not find an entity with specified entity name: " + retrieve.LogicalName);
                 default:
                     return null;
@@ -1042,7 +1121,28 @@ namespace MyscotekDataCopier.Tests
                             "<cell name=\"name\" width=\"300\" /></row></grid>"
         };
 
-        private static OrganizationResponse AccountMetadata() => Metadata(DataverseSchemaProviderTests.AccountMetadata());
+        private OrganizationResponse AccountMetadata() => Metadata(WithManyToMany(DataverseSchemaProviderTests.AccountMetadata()));
+
+        private OrganizationResponse ContactMetadata() => Metadata(WithManyToMany(DataverseSchemaProviderTests.ContactMetadata()));
+
+        private EntityMetadata WithManyToMany(EntityMetadata metadata) => !IncludeManyToMany
+            ? metadata
+            : metadata.With("ManyToManyRelationships", new[]
+            {
+                DataverseSchemaProviderTests.ManyToMany(ManyToManyName, ManyToManyName, "account", "accountid", "contact", "contactid")
+            });
+
+        /// <summary>The intersect entity of <see cref="ManyToManyName"/>: its primary id and the two intersect attributes.</summary>
+        private static OrganizationResponse IntersectMetadata() =>
+            Metadata(new EntityMetadata { LogicalName = ManyToManyName, SchemaName = ManyToManyName }
+                .With("PrimaryIdAttribute", ManyToManyName + "id")
+                .With("IsIntersect", true)
+                .With("Attributes", new AttributeMetadata[]
+                {
+                    new UniqueIdentifierAttributeMetadata { LogicalName = ManyToManyName + "id" },
+                    new UniqueIdentifierAttributeMetadata { LogicalName = "accountid" },
+                    new UniqueIdentifierAttributeMetadata { LogicalName = "contactid" }
+                }));
 
         private static OrganizationResponse Metadata(EntityMetadata metadata)
         {

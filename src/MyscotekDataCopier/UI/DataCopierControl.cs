@@ -25,7 +25,7 @@ namespace MyscotekDataCopier.UI
     /// connection (<see cref="PluginControlBase.Service"/>); the DESTINATION is a second connection
     /// requested with <see cref="PluginControlBase.RaiseRequestConnectionEvent"/> as an additional
     /// organisation (<see cref="DestinationActionName"/>). Pick an entity and
-    /// a view, load and tick records, choose the relationship options (SPEC 5.10; the 1:N
+    /// a view, load and tick records, choose the relationship options (SPEC 5.10; the 1:N and N:N
     /// relationships in <see cref="RelationshipPickerForm"/>), then copy them with <see cref="CopyEngine"/>.
     /// Long operations run with Task.Run + async/await (not WorkAsync) so the log stays visible and live
     /// while they run; one operation at a time, and Cancel stops it. Every action that needs the
@@ -393,7 +393,7 @@ namespace MyscotekDataCopier.UI
             _settings.CopyLookups = _copyLookups.Checked;
             _settings.CopyChildren = _copyChildren.Checked;
             SaveSettings();
-            UpdateControlStates();   // Relationships... follows the 1:N option
+            UpdateControlStates();   // Relationships... follows the 1:N and N:N option
         }
 
         private CopyOptions BuildOptions()
@@ -420,13 +420,13 @@ namespace MyscotekDataCopier.UI
                                                ?? ConnectionDetail?.Organization);
 
         // =====================================================================================
-        // 1:N relationships (SPEC 5.10)
+        // 1:N and N:N relationships (SPEC 5.10)
         // =====================================================================================
 
-        private void OnRelationshipsClick(object sender, EventArgs e) => RequestSource("Choosing the 1:N relationships", ChooseRelationships);
+        private void OnRelationshipsClick(object sender, EventArgs e) => RequestSource("Choosing the 1:N and N:N relationships", ChooseRelationships);
 
         /// <summary>Relationships...: runs through <see cref="RequestSource"/>.</summary>
-        private void ChooseRelationships() => Guard("Choosing the 1:N relationships", ShowRelationshipPicker);
+        private void ChooseRelationships() => Guard("Choosing the 1:N and N:N relationships", ShowRelationshipPicker);
 
         /// <summary>
         /// Opens the relationship picker for the current entity with the selections saved for this source
@@ -452,41 +452,58 @@ namespace MyscotekDataCopier.UI
             }
         }
 
-        /// <summary>The log line after the picker: the configured entities and their ticked relationships.</summary>
+        /// <summary>
+        /// The log line after the picker: the configured entities and their ticked relationships (1:N and
+        /// N:N schema names in one list per entity).
+        /// </summary>
         internal static string DescribeConfiguredRelationships(IReadOnlyDictionary<string, ISet<string>> configured)
         {
+            const string Others = "the subgrids on its active main forms (as a peer through an N:N relationship: nothing).";
             if (configured == null || configured.Count == 0)
-                return "1:N relationships: no entity configured; every entity follows the subgrids on its active main forms.";
+                return "1:N and N:N relationships: no entity configured; every entity follows " + Others;
             string entities = string.Join("; ", configured
                 .OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(p => p.Key + ": " + (p.Value == null || p.Value.Count == 0
                     ? "none"
                     : string.Join(", ", p.Value.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)))));
-            return "1:N relationships saved - " + entities + ". Every other entity follows the subgrids on its active main forms.";
+            return "1:N and N:N relationships saved - " + entities + ". Every other entity follows " + Others;
         }
 
         /// <summary>
-        /// The run header lines about the 1:N relationships: those followed from the selected entity
-        /// (and whether they were ticked in the picker or come from its main-form subgrids), then how
-        /// the other entities are treated. Reads metadata and forms: call it off the UI thread.
+        /// The run header lines about the relationships: the 1:N and then the N:N relationships followed
+        /// from the selected entity (and whether they were ticked in the picker or come from its
+        /// main-form subgrids), then how the other entities - child records and peers - are treated.
+        /// Reads metadata and forms: call it off the UI thread.
         /// </summary>
         internal static IList<string> DescribeChildRelationships(DefaultChildRelationshipSelector selector, string entity)
         {
             string origin = selector.IsConfigured(entity) ? "ticked in Relationships..." : "the subgrids on its active main forms";
-            string list;
+            string children;
             try
             {
                 IReadOnlyList<ChildRelationship> relationships = selector.GetChildRelationships(entity);
-                list = relationships.Count == 0 ? "none" : string.Join(", ", relationships.Select(r => r.ToString()));
+                children = relationships.Count == 0 ? "none" : string.Join(", ", relationships.Select(r => r.ToString()));
             }
             catch (Exception ex)
             {
-                list = "could not be determined: " + CopyEngine.ErrorText(ex);
+                children = "could not be determined: " + CopyEngine.ErrorText(ex);
+            }
+            string peers;
+            try
+            {
+                IReadOnlyList<ManyToManyRelationship> relationships = selector.GetManyToManyRelationships(entity, RelationshipContext.SelectedOrChild);
+                peers = relationships.Count == 0 ? "none" : string.Join(", ", relationships.Select(r => $"{r.SchemaName} ({r.OtherEntity(entity)})"));
+            }
+            catch (Exception ex)
+            {
+                peers = "could not be determined: " + CopyEngine.ErrorText(ex);
             }
             return new List<string>
             {
-                $"1:N relationships followed from {entity} ({origin}): {list}",
-                "Other entities reached as child records follow the relationships ticked for them in Relationships..., otherwise the subgrids on their active main forms."
+                $"1:N relationships followed from {entity} ({origin}): {children}",
+                $"N:N relationships followed from {entity} ({origin}): {peers}",
+                "Other entities reached as child records follow the relationships ticked for them in Relationships..., otherwise the subgrids on their active main forms; " +
+                "records reached through N:N relationships (peers) are created when missing, then associated, and follow only the relationships ticked for their entity."
             };
         }
 
@@ -1466,8 +1483,8 @@ namespace MyscotekDataCopier.UI
             DefaultChildRelationshipSelector selector = null;
             if (options.CopyChildren)
             {
-                // The relationships ticked in the picker for this source, else each entity's main-form
-                // subgrids - read once per run (a fresh FormSubgridService).
+                // The 1:N and N:N relationships ticked in the picker for this source, else each entity's
+                // main-form subgrids (for a peer: nothing) - read once per run (a fresh FormSubgridService).
                 var subgrids = new FormSubgridService();
                 selector = new DefaultChildRelationshipSelector(SourceSchema(source), name => subgrids.GetMainFormSubgridRelationships(source, name),
                     _settings.GetRelationshipSelections(SourceOrganizationKey()), options.NeverCreateEntities);
@@ -1481,7 +1498,7 @@ namespace MyscotekDataCopier.UI
                 $"Options: dry run {OnOff(options.DryRun)}, preserve created on {OnOff(options.PreserveCreatedOn)}, " +
                 $"bypass custom plugins {OnOff(options.BypassCustomPluginExecution)}, " +
                 $"create related records for N:1 relationships (lookups) {OnOff(options.CopyLookups)}, " +
-                $"create related records for 1:N relationships (subgrids) {OnOff(options.CopyChildren)}; " +
+                $"create related records for 1:N and N:N relationships (subgrids) {OnOff(options.CopyChildren)}; " +
                 $"never created: {NeverCreateList(options)}");
 
             int run = ++_copyRun;
@@ -1552,13 +1569,18 @@ namespace MyscotekDataCopier.UI
                 Updated = summary.Updated,
                 SkippedExisting = summary.SkippedExisting,
                 Failed = summary.Failed,
-                ChildRecordsFound = summary.ChildRecordsFound
+                ChildRecordsFound = summary.ChildRecordsFound,
+                PeerRecordsFound = summary.PeerRecordsFound,
+                AssociationsCreated = summary.AssociationsCreated,
+                AssociationsSkipped = summary.AssociationsSkipped,
+                AssociationsFailed = summary.AssociationsFailed
             });
         }
 
         /// <summary>
         /// The progress label text, e.g. "3 / 25 - created 41, failed 1"; updated, skipped (existing
-        /// related records) and child records found are included when not zero.
+        /// related records), child records found, peers found and the associations (created, skipped,
+        /// failed) are included when not zero.
         /// </summary>
         internal static string FormatProgress(CopyProgress progress)
         {
@@ -1566,11 +1588,20 @@ namespace MyscotekDataCopier.UI
             text.Append(progress.SelectedIndex.ToString(CultureInfo.CurrentCulture))
                 .Append(" / ").Append(progress.SelectedTotal.ToString(CultureInfo.CurrentCulture))
                 .Append(" - created ").Append(progress.Created.ToString(CultureInfo.CurrentCulture));
-            if (progress.Updated > 0) text.Append(", updated ").Append(progress.Updated.ToString(CultureInfo.CurrentCulture));
-            if (progress.SkippedExisting > 0) text.Append(", skipped ").Append(progress.SkippedExisting.ToString(CultureInfo.CurrentCulture));
-            if (progress.ChildRecordsFound > 0) text.Append(", children found ").Append(progress.ChildRecordsFound.ToString(CultureInfo.CurrentCulture));
+            AppendCount(text, "updated", progress.Updated);
+            AppendCount(text, "skipped", progress.SkippedExisting);
+            AppendCount(text, "children found", progress.ChildRecordsFound);
+            AppendCount(text, "peers found", progress.PeerRecordsFound);
+            AppendCount(text, "associated", progress.AssociationsCreated);
+            AppendCount(text, "associations skipped", progress.AssociationsSkipped);
+            AppendCount(text, "associations failed", progress.AssociationsFailed);
             text.Append(", failed ").Append(progress.Failed.ToString(CultureInfo.CurrentCulture));
             return text.ToString();
+        }
+
+        private static void AppendCount(StringBuilder text, string label, int value)
+        {
+            if (value > 0) text.Append(", ").Append(label).Append(' ').Append(value.ToString(CultureInfo.CurrentCulture));
         }
 
         /// <summary>The summary block logged after a run: counts, elapsed time, then one line per error.</summary>
@@ -1589,10 +1620,15 @@ namespace MyscotekDataCopier.UI
                 (summary.Failed > 0 ? LogLevel.Error : LogLevel.Info, SummaryRow("Failed", summary.Failed)),
                 (summary.LookupsBlanked > 0 ? LogLevel.Warning : LogLevel.Info, SummaryRow("Lookups blanked", summary.LookupsBlanked)),
                 (LogLevel.Info, SummaryRow("Lookups backfilled", summary.LookupsBackfilled)),
-                (LogLevel.Info, SummaryRow("Child records found", summary.ChildRecordsFound)),
-                (LogLevel.Info, SummaryRow("State changes", summary.StateChanges)),
-                (LogLevel.Info, "  " + "Elapsed".PadRight(20) + FormatElapsed(summary.Elapsed))
+                (LogLevel.Info, SummaryRow("Child records found", summary.ChildRecordsFound))
             };
+            // The N:N counts only when there is something to say (SPEC 5.10).
+            if (summary.PeerRecordsFound > 0) lines.Add((LogLevel.Info, SummaryRow("Peer records found", summary.PeerRecordsFound)));
+            if (summary.AssociationsCreated > 0) lines.Add((LogLevel.Info, SummaryRow("Associations created", summary.AssociationsCreated)));
+            if (summary.AssociationsSkipped > 0) lines.Add((LogLevel.Info, SummaryRow("Associations skipped", summary.AssociationsSkipped)));
+            if (summary.AssociationsFailed > 0) lines.Add((LogLevel.Warning, SummaryRow("Associations failed", summary.AssociationsFailed)));
+            lines.Add((LogLevel.Info, SummaryRow("State changes", summary.StateChanges)));
+            lines.Add((LogLevel.Info, "  " + "Elapsed".PadRight(SummaryLabelWidth) + FormatElapsed(summary.Elapsed)));
             if (summary.Errors.Count > 0)
             {
                 lines.Add((LogLevel.Error, $"  Errors ({summary.Errors.Count}):"));
@@ -1601,7 +1637,10 @@ namespace MyscotekDataCopier.UI
             return lines;
         }
 
-        private static string SummaryRow(string label, int value) => "  " + label.PadRight(20) + value.ToString(CultureInfo.CurrentCulture);
+        /// <summary>The width of the summary labels: the longest ("Associations created") and a space.</summary>
+        private const int SummaryLabelWidth = 21;
+
+        private static string SummaryRow(string label, int value) => "  " + label.PadRight(SummaryLabelWidth) + value.ToString(CultureInfo.CurrentCulture);
 
         internal static string FormatElapsed(TimeSpan elapsed) =>
             string.Format(CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00}", (int)elapsed.TotalHours, elapsed.Minutes, elapsed.Seconds);

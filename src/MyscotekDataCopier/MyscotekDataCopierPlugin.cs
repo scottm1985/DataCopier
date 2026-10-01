@@ -9,7 +9,7 @@ namespace MyscotekDataCopier
 	// must be present - if any is missing the export is silently dropped and the tool never shows.
 	[Export(typeof(IXrmToolBoxPlugin))]
 	[ExportMetadata("Name", "Data Copier")]
-	[ExportMetadata("Description", "Copies selected records from a source to a destination Dataverse / Dynamics 365 environment keeping the same GUIDs, with the records their lookups point at and, optionally, their child records.")]
+	[ExportMetadata("Description", "Copies selected records from a source to a destination Dataverse / Dynamics 365 environment keeping the same GUIDs, with the records their lookups point at and, optionally, their child records and N:N associations.")]
 	[ExportMetadata("BackgroundColor", "#2868B1")]
 	[ExportMetadata("PrimaryFontColor", "White")]
 	[ExportMetadata("SecondaryFontColor", "WhiteSmoke")]

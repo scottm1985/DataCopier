@@ -9,7 +9,9 @@ from a **source** Dataverse / Dynamics 365 environment (online, or on-premises 9
 - The records a copied record points at through its lookups are copied first (parents before
   children), as deep as needed, so every lookup still resolves in the destination.
 - Optionally the **child records** come along too - the records in the selected records' subgrids
-  (an account's contacts, its activities...) and their children in turn.
+  (an account's contacts, its activities...) and their children in turn - and the records
+  **associated** with them through many-to-many (N:N) relationships, which are copied and then
+  associated in the destination as well.
 - Records that already exist are handled by clear rules; users, teams and currencies are never
   created; virtual tables are only checked; won opportunities, resolved cases and other closing
   states are applied the way the platform requires.
@@ -58,8 +60,9 @@ every other assembly it uses.
    **Filter loaded records...** narrows the grid on any visible column and keeps the ticks.
    **Select all** / **Select none** act on the rows the filter shows; `Selected: N` counts every
    ticked record and says how many the filter hides.
-6. **Choose the options** (below). With **Create related records for 1:N relationships (subgrids)**
-   ticked, use **Relationships...** to see and change which child records come along.
+6. **Choose the options** (below). With **Create related records for 1:N and N:N relationships
+   (subgrids)** ticked, use **Relationships...** to see and change which child records and associated
+   records come along.
 7. **Copy.** Click **Copy selected records**. The progress shows next to **Cancel**
    (`3 / 25 - created 41, failed 1`) and every step appears in the log. **Cancel** stops the copy
    before the next record; the summary of what was done is still logged.
@@ -74,25 +77,28 @@ While something runs, the inputs are disabled and **Cancel** is enabled; XrmTool
 | **Preserve created on (overriddencreatedon)** | On create, the source `createdon` date is written to `overriddencreatedon`. If the destination refuses it (a missing privilege), the record is created without it and a warning is logged. |
 | **Bypass custom plugins (online only)** | Sends `BypassCustomPluginExecution` with every create, update and close message so custom plugins do not run. Dataverse online only, and the user needs the `prvBypassCustomPlugins` privilege. |
 | **Create related records for N:1 relationships (lookups)** | Ticked (the default): the records the copied records point at are created first, recursively. Unticked: no lookup target is created or updated; a lookup is kept only if its record exists in the destination by the end of the selected record's copy (see [Lookups not copied](#lookups-not-copied)). |
-| **Create related records for 1:N relationships (subgrids)** | Unticked by default. Ticked: the child records of the selected records are copied too, recursively (see [Child records](#child-records)). **Relationships...** chooses the relationships. |
+| **Create related records for 1:N and N:N relationships (subgrids)** | Unticked by default. Ticked: the child records of the selected records are copied too, recursively (see [Child records](#child-records)), and so are the records associated with them through N:N relationships, which are then associated in the destination (see [Associated records (N:N)](#associated-records-nn)). **Relationships...** chooses the relationships. |
 
 The options are remembered between sessions. With both relationship options unticked, only the
 selected records are written.
 
 ### The Relationships picker
 
-**Relationships...** opens a tree with the selected entity at the top and its 1:N relationships
-below it, for example `Contacts (contact) via parentcustomerid - contact_customer_accounts [subgrid]`
-(`[subgrid]`: shown as a subgrid on the entity's active main forms; `[custom]`: a custom
+**Relationships...** opens a tree with the selected entity at the top and its 1:N and N:N
+relationships below it, for example `Contacts (contact) via parentcustomerid - contact_customer_accounts [subgrid]`
+or `Leads (lead) - accountleads_association [N:N] [subgrid]` (`[N:N]`: a many-to-many relationship;
+`[subgrid]`: shown as a subgrid on the entity's active main forms; `[custom]`: a custom
 relationship). Each relationship expands into the relationships of ITS entity, so you can go down
-level by level. Ticks belong to the entity: contact shows the same ticks wherever it appears.
-**Tick subgrids**, **Tick custom** and **Untick all** act on the relationships under the selected
-line.
+level by level. Ticks belong to the entity: once you change them, contact shows the same ticks
+wherever it appears. **Tick subgrids**, **Tick custom** and **Untick all** act on the relationships
+under the selected line.
 
-By default every entity follows the subgrids on its active main forms in the source. An entity whose
-ticks you change keeps them (remembered per source organisation); every other entity keeps following
-its subgrids. Opening the tree reads the metadata of the child entities, which can take a while on a
-large organisation the first time.
+By default every entity follows the subgrids on its active main forms in the source - except where
+it is reached through an N:N relationship: there it is a *peer*, and under an `[N:N]` line nothing is
+ticked until you tick it (the tree says `(peer: nothing is followed unless ticked)`). An entity whose
+ticks you change keeps them (remembered per source organisation), however it is reached; every other
+entity keeps following its subgrids, and as a peer follows nothing. Opening the tree reads the
+metadata of the related entities, which can take a while on a large organisation the first time.
 
 ## What gets copied, and how
 
@@ -109,7 +115,8 @@ large organisation the first time.
 While **Create related records for N:1 relationships (lookups)** is ticked:
 
 - Lookup, Customer, Owner and Regarding columns and activity party lists are followed, recursively.
-  Many-to-many associations are **not** copied.
+  Many-to-many associations are not followed through lookups: see
+  [Associated records (N:N)](#associated-records-nn).
 - A related record that **already exists** in the destination is **skipped, never updated**
   (`Exists, skipped`).
 - A related record that **fails to create** is logged as an error and skipped; the run continues and
@@ -121,7 +128,7 @@ While **Create related records for N:1 relationships (lookups)** is ticked:
 
 ### Child records
 
-While **Create related records for 1:N relationships (subgrids)** is ticked:
+While **Create related records for 1:N and N:N relationships (subgrids)** is ticked:
 
 - After a selected record is created or updated - or found already there - the records that point at
   it through the chosen 1:N relationships are copied too, then THEIR child records, as deep as it goes.
@@ -134,6 +141,35 @@ While **Create related records for 1:N relationships (subgrids)** is ticked:
   task, phone call...).
 - Tables the platform fills itself (system jobs, duplicate-detection records, activity parties,
   addresses...) are never followed; notes are.
+
+### Associated records (N:N)
+
+While **Create related records for 1:N and N:N relationships (subgrids)** is ticked, the many-to-many
+(N:N) relationships chosen in **Relationships...** are followed too:
+
+- The records associated with a selected or child record in the source - for example the leads of
+  an account through `accountleads_association` - are its **peers**. A peer that the destination does
+  not have is created, with the same GUID (its lookups follow **Create related records for N:1
+  relationships (lookups)** like any record's); one that exists is skipped, never updated.
+- Then the **association** itself is created in the destination - unless the two records are
+  associated there already, which is skipped. The log shows
+  `Associated records of account "Contoso" via accountleads_association: 2 lead records`, then
+  `Associated account "Contoso" <-> lead "Jane Lead" via accountleads_association` or
+  `Association exists, skipped ...` for each.
+- **Peers are not children.** A peer's own relationships are followed only when its entity has ticks
+  saved in **Relationships...**; a peer whose entity you have not configured brings nothing else
+  along, not even its subgrids. (A record that is also selected, or a child record, still gets its
+  own related records as such.)
+- Self-referencing relationships (account to account) are followed from both ends, and every
+  association keeps the direction it has in the source.
+- A peer that cannot be copied skips its association, and an association the destination refuses is
+  logged; both are warnings and the copy carries on.
+- Associations are made before the status of the records is applied, so a record that ends up
+  closed (a won opportunity, say) is associated first.
+- Security and system relationships (roles, privileges, field security profiles, queues, positions,
+  team membership, sharing) and relationships to users, teams, currencies and other never-created
+  entities, or to virtual tables, are never followed. A relationship the destination does not have
+  is skipped with one warning.
 
 ### Lookups not copied
 
@@ -194,11 +230,12 @@ record stays copied and a warning is logged.
 
 Every line is time-stamped and coloured: black for information, green for success, amber for
 warnings, red for errors. A copy logs a header (entity, count, source, destination, options and, with
-child records, the 1:N relationships followed), then each record with the records it pulls in
+related records, the 1:N and N:N relationships followed), then each record with the records it pulls in
 (indented by depth) and the outcome (`Created`, `Updated`, `Exists, skipped`, `FAILED`), every lookup
-blanked, kept unverified or backfilled, every column skipped and every state change. It ends with a
-summary: created, updated, skipped, failed, lookups blanked and backfilled, child records found,
-state changes, elapsed time and one line per error.
+blanked, kept unverified or backfilled, every association, every column skipped and every state
+change. It ends with a summary: created, updated, skipped, failed, lookups blanked and backfilled,
+child records found, the peer records found and the associations created, skipped and failed (when
+there are any), state changes, elapsed time and one line per error.
 
 **Copy log** copies it to the clipboard, **Save log...** writes a text file, **Clear** empties it. The
 window keeps the last 20,000 lines. Errors, and each copy's header and summary, also go to XrmToolBox's
@@ -213,7 +250,7 @@ file only while XrmToolBox is closed.
 |---|---|---|
 | `DryRun`, `PreserveCreatedOn`, `BypassCustomPlugins` | false | The option check boxes. |
 | `CopyLookups` | true | **Create related records for N:1 relationships (lookups)**. |
-| `CopyChildren` | false | **Create related records for 1:N relationships (subgrids)**. |
+| `CopyChildren` | false | **Create related records for 1:N and N:N relationships (subgrids)**. |
 | `RelationshipSelections` | (empty) | The relationships chosen in **Relationships...**, per source organisation and entity. |
 | `PageSize` | 500 | Records per page when loading (1 - 5000). |
 | `NeverCreateEntities` | `systemuser,team,businessunit,organization,transactioncurrency` | Comma-separated logical names; blank restores the default. |
@@ -224,7 +261,9 @@ environments, so schema changes on either side are picked up without reconnectin
 
 ## Limitations
 
-- Many-to-many associations, file columns and audit history are not copied.
+- File columns and audit history are not copied. Many-to-many associations are copied only with
+  **Create related records for 1:N and N:N relationships (subgrids)**, for the relationships that
+  option follows.
 - Users, teams, business units, the organisation and currencies are never created: create or
   synchronise them in the destination with the same GUIDs first, or accept the blank lookups.
 - A selected record that exists in the destination is always overwritten; a related or child record
@@ -248,7 +287,8 @@ environments, so schema changes on either side are picked up without reconnectin
   privilege, then copy again.
 - **`... but state not applied` warnings.** The record was copied but the destination refused its
   state (e.g. a business rule on closing). Set the state by hand, or fix the cause and copy again.
-- **Too many (or too few) child records.** Change the entity in **Relationships...**.
+- **Too many (or too few) child or associated records.** Change the entity in **Relationships...**
+  (under an `[N:N]` line, tick what a peer should bring along).
 - **The tool does not appear after installing a build by hand.** Make sure XrmToolBox was closed
   while copying the DLL. As a last resort, close XrmToolBox and delete `Plugins\manifest.json` (it is
   rebuilt on the next start).
@@ -269,9 +309,10 @@ needed) and checks that the package holds only `MyscotekDataCopier.dll` and its 
 
 The tests run the copy engine and its services against in-memory fakes of the source and the
 destination, and drive the tool's real control end to end: connecting (including the connection
-requests made without one), loading, filtering, ticking, dry-run copies with child records, the
-guards, errors and Cancel, the relationship picker and the layout at different sizes. The design
-contract for contributors is [SPEC.md](SPEC.md); engineering notes are in [CLAUDE.md](CLAUDE.md).
+requests made without one), loading, filtering, ticking, dry-run copies with child and associated
+records, the guards, errors and Cancel, the relationship picker (1:N and N:N) and the layout at
+different sizes. The design contract for contributors is [SPEC.md](SPEC.md); engineering notes are
+in [CLAUDE.md](CLAUDE.md).
 
 ## Licence
 

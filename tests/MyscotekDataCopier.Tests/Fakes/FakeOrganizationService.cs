@@ -6,6 +6,7 @@ using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Query;
+using MyscotekDataCopier.Core.Schema;
 
 namespace MyscotekDataCopier.Tests.Fakes
 {
@@ -18,7 +19,11 @@ namespace MyscotekDataCopier.Tests.Fakes
     /// LoseOpportunity, CloseIncident, WinQuote, CloseQuote, CancelSalesOrder, FulfillSalesOrder) set
     /// the state of the stored record, from the states the platform closes it from. QueryExpressions
     /// are evaluated over the store (AND-ed Equal/Null/NotNull conditions, orders, TopCount and
-    /// PageInfo with a paging cookie), e.g. the child-record and systemform queries of SPEC 5.10.
+    /// PageInfo with a paging cookie), e.g. the child-record and systemform queries of SPEC 5.10 - and
+    /// the intersect queries of N:N relationships: an association is a row of the intersect entity
+    /// (seeded with <see cref="AddAssociation"/>), and an AssociateRequest over a relationship declared
+    /// with <see cref="ManyToMany"/> adds one (both records must exist; a pair that is there already
+    /// fails with "Cannot insert duplicate key.", like the platform).
     /// </summary>
     public sealed class FakeOrganizationService : IOrganizationService
     {
@@ -52,6 +57,13 @@ namespace MyscotekDataCopier.Tests.Fakes
         /// <summary>Retrieves that throw the given exception: key "entity" (all records of it) or "entity/guid" (one record).</summary>
         public Dictionary<string, Exception> FailRetrieves { get; } = new Dictionary<string, Exception>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>AssociateRequests over one of these relationships (schema names) throw.</summary>
+        public HashSet<string> FailAssociates { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>The N:N relationships the fake knows (for AssociateRequest and the association helpers), by schema name.</summary>
+        public Dictionary<string, ManyToManyRelationship> ManyToManyRelationships { get; } =
+            new Dictionary<string, ManyToManyRelationship>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>Primary id attribute per entity when it is not "{entity}id".</summary>
         public Dictionary<string, string> PrimaryIdAttributes { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -81,6 +93,38 @@ namespace MyscotekDataCopier.Tests.Fakes
             return this;
         }
 
+        /// <summary>Declares an N:N relationship: its intersect entity and, per side, the entity and the intersect attribute.</summary>
+        public FakeOrganizationService ManyToMany(string schemaName, string intersectEntity, string entity1, string entity1Attribute,
+                                                  string entity2, string entity2Attribute)
+        {
+            ManyToManyRelationships[schemaName] = new ManyToManyRelationship
+            {
+                SchemaName = schemaName,
+                IntersectEntity = intersectEntity,
+                Entity1LogicalName = entity1,
+                Entity1IntersectAttribute = entity1Attribute,
+                Entity2LogicalName = entity2,
+                Entity2IntersectAttribute = entity2Attribute
+            };
+            return this;
+        }
+
+        /// <summary>Seeds an association: a row of the relationship's intersect entity holding the side-1 and side-2 ids.</summary>
+        public FakeOrganizationService AddAssociation(string schemaName, Guid entity1Id, Guid entity2Id)
+        {
+            AddIntersectRow(DeclaredRelationship(schemaName), entity1Id, entity2Id);
+            return this;
+        }
+
+        /// <summary>The associated pairs (side-1 id, side-2 id) of a relationship: the rows of its intersect entity.</summary>
+        public IReadOnlyList<(Guid Entity1Id, Guid Entity2Id)> Associations(string schemaName)
+        {
+            ManyToManyRelationship relationship = DeclaredRelationship(schemaName);
+            return IntersectRows(relationship)
+                .Select(e => ((Guid)e[relationship.Entity1IntersectAttribute], (Guid)e[relationship.Entity2IntersectAttribute]))
+                .ToList();
+        }
+
         public Entity Get(string entity, Guid id) => _store.TryGetValue(Key(entity, id), out Entity stored) ? stored : null;
 
         public bool Contains(string entity, Guid id) => _store.ContainsKey(Key(entity, id));
@@ -97,9 +141,12 @@ namespace MyscotekDataCopier.Tests.Fakes
         /// <summary>The close messages (WinOpportunity, CloseIncident, WinQuote...), in order.</summary>
         public IReadOnlyList<OrganizationRequest> CloseRequests => Executed.Where(IsCloseRequest).ToList();
 
-        /// <summary>Create, Update and Delete requests, and the close messages.</summary>
+        /// <summary>The AssociateRequests, in order.</summary>
+        public IReadOnlyList<AssociateRequest> Associates => Executed.OfType<AssociateRequest>().ToList();
+
+        /// <summary>Create, Update, Delete and Associate requests, and the close messages.</summary>
         public IReadOnlyList<OrganizationRequest> Writes =>
-            Executed.Where(r => r is CreateRequest || r is UpdateRequest || r is DeleteRequest || IsCloseRequest(r)).ToList();
+            Executed.Where(r => r is CreateRequest || r is UpdateRequest || r is DeleteRequest || r is AssociateRequest || IsCloseRequest(r)).ToList();
 
         public static bool IsCloseRequest(OrganizationRequest request) =>
             request is WinOpportunityRequest || request is LoseOpportunityRequest || request is CloseIncidentRequest
@@ -126,7 +173,7 @@ namespace MyscotekDataCopier.Tests.Fakes
             (EntityCollection)Execute(new RetrieveMultipleRequest { Query = query }).Results["EntityCollection"];
 
         public void Associate(string entityName, Guid entityId, Relationship relationship, EntityReferenceCollection relatedEntities) =>
-            throw new NotSupportedException("Associate is not used by the copier.");
+            Execute(new AssociateRequest { Target = new EntityReference(entityName, entityId), Relationship = relationship, RelatedEntities = relatedEntities });
 
         public void Disassociate(string entityName, Guid entityId, Relationship relationship, EntityReferenceCollection relatedEntities) =>
             throw new NotSupportedException("Disassociate is not used by the copier.");
@@ -153,6 +200,7 @@ namespace MyscotekDataCopier.Tests.Fakes
                 case CloseQuoteRequest closeQuote: return DoClose(closeQuote, closeQuote.QuoteClose, "quoteid", 3, closeQuote.Status, new CloseQuoteResponse());
                 case CancelSalesOrderRequest cancel: return DoClose(cancel, cancel.OrderClose, "salesorderid", 2, cancel.Status, new CancelSalesOrderResponse());
                 case FulfillSalesOrderRequest fulfil: return DoClose(fulfil, fulfil.OrderClose, "salesorderid", 3, fulfil.Status, new FulfillSalesOrderResponse());
+                case AssociateRequest associate: return DoAssociate(associate);
                 case DeleteRequest delete:
                     if (!_store.Remove(Key(delete.Target.LogicalName, delete.Target.Id))) throw NotFound(delete.Target.LogicalName, delete.Target.Id);
                     return new DeleteResponse();
@@ -233,6 +281,66 @@ namespace MyscotekDataCopier.Tests.Fakes
             stored["statuscode"] = status == null ? null : new OptionSetValue(status.Value);
             return response;
         }
+
+        /// <summary>
+        /// Associates the target with each related record over a declared N:N relationship, as a new row of
+        /// its intersect entity. Like the platform: both records must exist, the target must be on one side
+        /// of it (a self-referential relationship needs PrimaryEntityRole: Referencing puts the target on
+        /// side 1, Referenced on side 2), and a pair that is associated already fails with "Cannot insert
+        /// duplicate key.".
+        /// </summary>
+        private OrganizationResponse DoAssociate(AssociateRequest request)
+        {
+            string schemaName = request.Relationship?.SchemaName;
+            if (string.IsNullOrEmpty(schemaName) || !ManyToManyRelationships.TryGetValue(schemaName, out ManyToManyRelationship relationship))
+                throw Fault(GenericFailure, $"Simulated: no N:N relationship named {schemaName}.");
+            if (FailAssociates.Contains(schemaName))
+                throw Fault(GenericFailure, $"Simulated associate failure for {schemaName}");
+            EntityReference target = request.Target ?? throw Fault(GenericFailure, "Associate: no target.");
+            if (!_store.ContainsKey(Key(target.LogicalName, target.Id))) throw NotFound(target.LogicalName, target.Id);
+
+            bool targetIsSide1;
+            if (relationship.IsSelfReferential)
+            {
+                EntityRole role = request.Relationship.PrimaryEntityRole
+                    ?? throw Fault(GenericFailure, $"Simulated: the PrimaryEntityRole of the self-referential relationship {schemaName} is required.");
+                targetIsSide1 = role == EntityRole.Referencing;
+            }
+            else if (SameEntity(target.LogicalName, relationship.Entity1LogicalName)) targetIsSide1 = true;
+            else if (SameEntity(target.LogicalName, relationship.Entity2LogicalName)) targetIsSide1 = false;
+            else throw Fault(GenericFailure, $"Simulated: {target.LogicalName} is not a side of {schemaName}.");
+
+            foreach (EntityReference related in request.RelatedEntities ?? new EntityReferenceCollection())
+            {
+                string expected = targetIsSide1 ? relationship.Entity2LogicalName : relationship.Entity1LogicalName;
+                if (!SameEntity(related.LogicalName, expected)) throw Fault(GenericFailure, $"Simulated: {related.LogicalName} is not the other side of {schemaName}.");
+                if (!_store.ContainsKey(Key(related.LogicalName, related.Id))) throw NotFound(related.LogicalName, related.Id);
+                Guid side1 = targetIsSide1 ? target.Id : related.Id;
+                Guid side2 = targetIsSide1 ? related.Id : target.Id;
+                if (IntersectRows(relationship).Any(row => Equals(row[relationship.Entity1IntersectAttribute], side1) && Equals(row[relationship.Entity2IntersectAttribute], side2)))
+                    throw Fault(DuplicateRecord, "Cannot insert duplicate key.");
+                AddIntersectRow(relationship, side1, side2);
+            }
+            return new AssociateResponse();
+        }
+
+        private ManyToManyRelationship DeclaredRelationship(string schemaName) =>
+            ManyToManyRelationships.TryGetValue(schemaName ?? string.Empty, out ManyToManyRelationship relationship)
+                ? relationship
+                : throw new ArgumentException($"Declare the N:N relationship {schemaName} with ManyToMany first.");
+
+        private IEnumerable<Entity> IntersectRows(ManyToManyRelationship relationship) =>
+            _store.Values.Where(e => string.Equals(e.LogicalName, relationship.IntersectEntity, StringComparison.OrdinalIgnoreCase));
+
+        private void AddIntersectRow(ManyToManyRelationship relationship, Guid side1, Guid side2)
+        {
+            var row = new Entity(relationship.IntersectEntity.ToLowerInvariant(), Guid.NewGuid());
+            row[relationship.Entity1IntersectAttribute] = side1;
+            row[relationship.Entity2IntersectAttribute] = side2;
+            _store[Key(row.LogicalName, row.Id)] = row;
+        }
+
+        private static bool SameEntity(string first, string second) => string.Equals(first, second, StringComparison.OrdinalIgnoreCase);
 
         private OrganizationResponse DoRetrieve(EntityReference target, ColumnSet columns)
         {

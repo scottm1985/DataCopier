@@ -9,6 +9,8 @@ namespace MyscotekDataCopier.Core
         public int SelectedIndex, SelectedTotal;      // 1-based index of the selected record being processed
         public int Created, Updated, SkippedExisting, Failed, LookupsBlanked, LookupsBackfilled;
         public int ChildRecordsFound;                 // child records listed through 1:N relationships (SPEC 5.10)
+        public int PeerRecordsFound;                  // associated records (peers) listed through N:N relationships (SPEC 5.10)
+        public int AssociationsCreated, AssociationsSkipped, AssociationsFailed;   // N:N associations (SPEC 5.10)
         public string CurrentRecord;                  // e.g. contact "Jane Doe"
     }
 }

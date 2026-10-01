@@ -15,7 +15,8 @@ namespace MyscotekDataCopier.Tests
     /// <summary>
     /// The relationship picker (SPEC 5.10) on its own, against a fake schema: lazy loading level by
     /// level, ticks per entity (synchronised wherever the entity appears), the buttons, saved
-    /// selections re-applied, and failures. The dialog is shown modeless and off-screen.
+    /// selections re-applied, failures, and the N:N relationships with the peers they lead to (nothing
+    /// ticked unless configured). The dialog is shown modeless and off-screen.
     /// </summary>
     public class RelationshipPickerFormTests
     {
@@ -44,6 +45,36 @@ namespace MyscotekDataCopier.Tests
             ["account"] = new[] { "contact_customer_accounts", "Account_Tasks" },
             ["contact"] = new[] { "Contact_Tasks" }
         };
+
+        /// <summary>
+        /// <see cref="Schema"/> plus N:N relationships: account-lead (a subgrid of account), matter-account and
+        /// account-account (self-referential), both custom; lead has a 1:N relationship to task and an N:N
+        /// relationship to competitor, both subgrids of lead (<see cref="ManyToManySubgrids"/>).
+        /// </summary>
+        private static FakeSchemaProvider ManyToManySchema()
+        {
+            FakeSchemaProvider schema = Schema();
+            schema.Entity("lead", "fullname").EntityDisplayName("Lead", "Leads")
+                    .OneToMany("Lead_Tasks", "task", "regardingobjectid")
+                .Entity("competitor", "name").EntityDisplayName("Competitor", "Competitors")
+                .Entity("new_matter", "new_name").EntityDisplayName("Matter", "Matters");
+            schema.Edit("task").Lookup("regardingobjectid", "account", "contact", "lead");
+            schema.ManyToMany("accountleads_association", "accountleads", "account", "accountid", "lead", "leadid")
+                .ManyToMany("new_matter_account", "new_matter_account", "new_matter", "new_matterid", "account", "accountid", custom: true)
+                .ManyToMany("new_account_account", "new_account_account", "account", "accountidone", "account", "accountidtwo", custom: true)
+                .ManyToMany("leadcompetitors_association", "leadcompetitors", "lead", "leadid", "competitor", "competitorid");
+            return schema;
+        }
+
+        private static readonly Dictionary<string, string[]> ManyToManySubgrids = new Dictionary<string, string[]>
+        {
+            ["account"] = new[] { "contact_customer_accounts", "Account_Tasks", "accountleads_association" },
+            ["contact"] = new[] { "Contact_Tasks" },
+            ["lead"] = new[] { "Lead_Tasks", "leadcompetitors_association" }
+        };
+
+        private static Func<string, IReadOnlyCollection<string>> SubgridsOf(Dictionary<string, string[]> subgrids) =>
+            entity => subgrids.TryGetValue(entity, out string[] names) ? names : Array.Empty<string>();
 
         private sealed class Picker : IDisposable
         {
@@ -121,7 +152,7 @@ namespace MyscotekDataCopier.Tests
             {
                 using (var picker = new Picker(Schema()))
                 {
-                    Assert.Equal("1:N relationships to copy - Account (account)", picker.Form.Text);
+                    Assert.Equal("1:N and N:N relationships to copy - Account (account)", picker.Form.Text);
                     Assert.Equal(new Size(700, 500), picker.Form.Size);
                     Assert.Equal(new Font("Segoe UI", 9f), picker.Form.Font);
                     Assert.Equal(FormBorderStyle.Sizable, picker.Form.FormBorderStyle);
@@ -148,7 +179,7 @@ namespace MyscotekDataCopier.Tests
                     Assert.Equal(0, StateImage(picker.Root));
 
                     Assert.Empty(picker.Form.ConfiguredSelections);   // nothing changed: every entity follows its subgrids
-                    Assert.Equal("No entity configured: every entity follows the subgrids on its main forms.", picker.Form.StatusText);
+                    Assert.Equal("No entity configured: every entity follows the subgrids on its main forms (as a peer: nothing).", picker.Form.StatusText);
                     Assert.Equal(new[] { "account" }, picker.SubgridRequests);   // the child entities are read only when expanded
                     Assert.Empty(picker.Messages);
                 }
@@ -191,7 +222,7 @@ namespace MyscotekDataCopier.Tests
                     IReadOnlyDictionary<string, ISet<string>> configured = picker.Form.ConfiguredSelections;
                     Assert.Equal(new[] { "contact" }, configured.Keys);   // account was not changed
                     Assert.Equal(new[] { "new_contact_widgets" }, configured["contact"]);
-                    Assert.Equal("Configured: contact (1 ticked). Every other entity follows its main-form subgrids.", picker.Form.StatusText);
+                    Assert.Equal("Configured: contact (1 ticked). Every other entity follows its main-form subgrids (as a peer: nothing).", picker.Form.StatusText);
 
                     // Unticking a root relationship configures the root entity with the rest of its ticks.
                     Node(picker.Root, "contact_customer_accounts").Checked = false;
@@ -262,7 +293,8 @@ namespace MyscotekDataCopier.Tests
                 {
                     Assert.Equal(new[] { "new_account_widgets" }, Ticked(picker.Root));
                     Assert.Empty(Ticked(picker.Expand(Node(picker.Root, "contact_customer_accounts"))));
-                    Assert.Equal("Configured: account (2 ticked), contact (none). Every other entity follows its main-form subgrids.", picker.Form.StatusText);
+                    Assert.Equal("Configured: account (2 ticked), contact (none). Every other entity follows its main-form subgrids (as a peer: nothing).",
+                        picker.Form.StatusText);
 
                     IReadOnlyDictionary<string, ISet<string>> configured = picker.Form.ConfiguredSelections;
                     Assert.Equal(new[] { "new_account_widgets", "relationship_that_is_gone" }, configured["account"].OrderBy(n => n, StringComparer.Ordinal));
@@ -287,7 +319,7 @@ namespace MyscotekDataCopier.Tests
                     contacts.Expand();
                     UiTestHost.PumpUntil(() => !picker.Form.IsLoading && picker.Messages.Count == 1, "the error");
 
-                    Assert.Equal((MessageBoxIcon.Error, "The 1:N relationships of contact could not be loaded: metadata unavailable"), picker.Messages[0]);
+                    Assert.Equal((MessageBoxIcon.Error, "The relationships of contact could not be loaded: metadata unavailable"), picker.Messages[0]);
                     Assert.False(contacts.IsExpanded);
                     Assert.Equal(RelationshipPickerForm.LoadingText, Assert.Single(contacts.Nodes.Cast<TreeNode>()).Text);
 
@@ -338,11 +370,134 @@ namespace MyscotekDataCopier.Tests
                     form.Show();
                     UiTestHost.PumpUntil(() => !form.IsLoading && messages.Count == 1, "the error");
 
-                    Assert.Equal("The 1:N relationships of account could not be loaded: Principal user is missing prvReadEntity privilege", messages[0]);
+                    Assert.Equal("The relationships of account could not be loaded: Principal user is missing prvReadEntity privilege", messages[0]);
                     Assert.Equal(RelationshipPickerForm.LoadingText, Assert.Single(form.RootNode.Nodes.Cast<TreeNode>()).Text);
                     Assert.Equal(messages[0], form.StatusText);
                 }
             });
+        }
+
+        [Fact]
+        public void N_N_relationships_are_listed_with_the_1N_ones_tagged_N_N_and_pre_ticked_when_they_are_subgrids()
+        {
+            UiTestHost.Run(() =>
+            {
+                using (var picker = new Picker(ManyToManySchema(), subgrids: SubgridsOf(ManyToManySubgrids)))
+                {
+                    // Subgrids first, then by text; an N:N relationship names the entity at the other end (account itself when self-referential).
+                    Assert.Equal(new[]
+                    {
+                        "Contacts (contact) via parentcustomerid" + Dash + "contact_customer_accounts [subgrid]",
+                        "Leads (lead)" + Dash + "accountleads_association [N:N] [subgrid]",
+                        "Tasks (task) via regardingobjectid" + Dash + "Account_Tasks [subgrid]",
+                        "Accounts (account)" + Dash + "new_account_account [N:N] [custom]",
+                        "Matters (new_matter)" + Dash + "new_matter_account [N:N] [custom]",
+                        "Widget (new_widget) via new_accountid" + Dash + "new_account_widgets [custom]"
+                    }, Texts(picker.Root));
+                    Assert.Equal(new[] { "contact_customer_accounts", "accountleads_association", "Account_Tasks" }, Ticked(picker.Root));
+                    Assert.Equal("accountleads_association: the lead records associated with the account (through accountleads), created when missing and then associated",
+                        Node(picker.Root, "accountleads_association").ToolTipText);
+                    Assert.Equal(RelationshipPickerForm.LoadingText, Assert.Single(Node(picker.Root, "new_matter_account").Nodes.Cast<TreeNode>()).Text);
+                    Assert.Empty(picker.Form.ConfiguredSelections);
+                    Assert.Empty(picker.Messages);
+                }
+            });
+        }
+
+        [Fact]
+        public void Under_an_N_N_relationship_the_peer_has_nothing_ticked_and_a_tick_there_configures_it_from_nothing()
+        {
+            UiTestHost.Run(() =>
+            {
+                using (var picker = new Picker(ManyToManySchema(), subgrids: SubgridsOf(ManyToManySubgrids)))
+                {
+                    // The peer rule first (no check box), then lead's own relationships - the one back to account too: subgrids, yet nothing ticked.
+                    TreeNode leads = picker.Expand(Node(picker.Root, "accountleads_association"));
+                    Assert.Equal(new[]
+                    {
+                        RelationshipPickerForm.PeerHintText,
+                        "Competitors (competitor)" + Dash + "leadcompetitors_association [N:N] [subgrid]",
+                        "Tasks (task) via regardingobjectid" + Dash + "Lead_Tasks [subgrid]",
+                        "Accounts (account)" + Dash + "accountleads_association [N:N]"
+                    }, Texts(leads));
+                    Assert.Equal("(peer: nothing is followed unless ticked)", RelationshipPickerForm.PeerHintText);
+                    Assert.Empty(Ticked(leads));
+                    Assert.Equal(0, StateImage(leads.Nodes[0]));
+                    leads.Nodes[0].Checked = true;
+                    Assert.False(leads.Nodes[0].Checked);
+
+                    // A tick under the peer configures lead from what it showed there: nothing, plus that tick.
+                    Node(leads, "Lead_Tasks").Checked = true;
+                    Assert.Equal(new[] { "Lead_Tasks" }, picker.Form.ConfiguredSelections["lead"]);
+                    Assert.Equal(new[] { "Lead_Tasks" }, Ticked(leads));
+                    Assert.Equal("Configured: lead (1 ticked). Every other entity follows its main-form subgrids (as a peer: nothing).", picker.Form.StatusText);
+
+                    // The child entity of a peer's 1:N relationship is listed as usual (no peer line).
+                    TreeNode tasks = picker.Expand(Node(leads, "Lead_Tasks"));
+                    Assert.Equal(RelationshipPickerForm.NoRelationshipsText, Assert.Single(tasks.Nodes.Cast<TreeNode>()).Text);
+
+                    // A self-referential relationship lists the entity itself as a peer: nothing ticked there, the root unchanged...
+                    TreeNode accounts = picker.Expand(Node(picker.Root, "new_account_account"));
+                    Assert.Equal(RelationshipPickerForm.PeerHintText, accounts.Nodes[0].Text);
+                    Assert.Equal(7, accounts.Nodes.Count);
+                    Assert.Empty(Ticked(accounts));
+                    Assert.Equal(new[] { "contact_customer_accounts", "accountleads_association", "Account_Tasks" }, Ticked(picker.Root));
+
+                    // ...until account is configured there: from nothing again, and then it shows the same ticks everywhere.
+                    Node(accounts, "new_matter_account").Checked = true;
+                    Assert.Equal(new[] { "new_matter_account" }, picker.Form.ConfiguredSelections["account"]);
+                    Assert.Equal(new[] { "new_matter_account" }, Ticked(picker.Root));
+                    Assert.Equal(new[] { "new_matter_account" }, Ticked(accounts));
+                    Assert.Empty(picker.Messages);
+                }
+            });
+        }
+
+        [Fact]
+        public void Saved_peer_ticks_are_shown_under_the_N_N_relationship_and_the_buttons_act_on_the_peer_entity()
+        {
+            UiTestHost.Run(() =>
+            {
+                var saved = new Dictionary<string, ISet<string>> { ["lead"] = new HashSet<string> { "leadcompetitors_association" } };
+                using (var picker = new Picker(ManyToManySchema(), saved, SubgridsOf(ManyToManySubgrids)))
+                {
+                    TreeNode leads = picker.Expand(Node(picker.Root, "accountleads_association"));
+                    Assert.Equal(new[] { "leadcompetitors_association" }, Ticked(leads));   // a configured peer shows its ticks
+
+                    picker.Form.Tree.SelectedNode = leads;
+                    picker.Click("tickSubgridsButton");
+                    Assert.Equal(new[] { "leadcompetitors_association", "Lead_Tasks" }, Ticked(leads));
+                    picker.Click("untickAllButton");
+                    Assert.Empty(Ticked(leads));
+                    Assert.Empty(picker.Form.ConfiguredSelections["lead"]);
+
+                    // On an unconfigured peer a button starts from nothing too: Tick custom ticks only the custom relationships.
+                    TreeNode matters = Node(picker.Root, "new_matter_account");
+                    picker.Form.Tree.SelectedNode = matters;
+                    picker.Click("tickCustomButton");
+                    Assert.True(matters.IsExpanded);
+                    Assert.Equal(new[] { RelationshipPickerForm.PeerHintText, "Accounts (account)" + Dash + "new_matter_account [N:N] [custom]" }, Texts(matters));
+                    Assert.Equal(new[] { "new_matter_account" }, Ticked(matters));
+                    Assert.Equal(new[] { "new_matter_account" }, picker.Form.ConfiguredSelections["new_matter"]);
+                    Assert.Equal(new[] { "lead", "new_matter" }, picker.Form.ConfiguredSelections.Keys.OrderBy(k => k, StringComparer.Ordinal));
+                    Assert.Empty(picker.Messages);
+                }
+            });
+        }
+
+        [Fact]
+        public void Many_to_many_text_names_the_entity_at_the_other_end_and_the_relationship_with_its_tags()
+        {
+            var relationship = new ManyToManyRelationship
+            {
+                SchemaName = "ptl_matter_contact", IntersectEntity = "ptl_matter_contact",
+                Entity1LogicalName = "ptl_matter", Entity1IntersectAttribute = "ptl_matterid", Entity2LogicalName = "contact", Entity2IntersectAttribute = "contactid"
+            };
+            Assert.Equal("Contacts (contact) — ptl_matter_contact [N:N] [subgrid]",
+                RelationshipPickerForm.ManyToManyText(relationship, "ptl_matter", "Contacts", isSubgrid: true));
+            relationship.IsCustomRelationship = true;
+            Assert.Equal("ptl_matter (ptl_matter) — ptl_matter_contact [N:N] [custom]",
+                RelationshipPickerForm.ManyToManyText(relationship, "Contact", null, isSubgrid: false));
         }
 
         [Fact]

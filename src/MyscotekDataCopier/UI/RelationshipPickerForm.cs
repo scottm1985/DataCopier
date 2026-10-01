@@ -13,19 +13,25 @@ using Label = System.Windows.Forms.Label;
 namespace MyscotekDataCopier.UI
 {
     /// <summary>
-    /// The relationship picker (SPEC 5.10): which 1:N relationships are followed to child records,
-    /// entity by entity. A TreeView with check boxes whose root is the selected entity and whose
-    /// children are its eligible 1:N relationships; each relationship expands, lazily, into the
-    /// relationships of its child entity, so the tree is shaped level by level. Ticks belong to an
-    /// entity - it shows the same ticks wherever it appears. An entity whose ticks were changed is
-    /// configured; the others follow the subgrids on their active main forms, which are pre-ticked.
+    /// The relationship picker (SPEC 5.10): which 1:N relationships are followed to child records and
+    /// which N:N relationships to associated records (peers), entity by entity. A TreeView with check
+    /// boxes whose root is the selected entity and whose children are its eligible 1:N and N:N
+    /// relationships; each relationship expands, lazily, into the relationships of the entity it leads
+    /// to (the child entity of a 1:N relationship, the entity at the other end of an N:N one), so the
+    /// tree is shaped level by level. Ticks belong to an entity - once configured it shows the same
+    /// ticks wherever it appears. An entity whose ticks were changed is configured; the others follow
+    /// the subgrids on their active main forms, which are pre-ticked - except where the entity is
+    /// listed as a peer (under an N:N relationship), where nothing is followed unless ticked.
     /// Metadata and forms are read on worker threads (wait cursor, progress in the status line).
     /// Built in code; shown with ShowDialog by <see cref="DataCopierControl"/>.
     /// </summary>
     internal sealed class RelationshipPickerForm : Form
     {
         internal const string LoadingText = "Loading...";
-        internal const string NoRelationshipsText = "(no 1:N relationships that can be followed)";
+        internal const string NoRelationshipsText = "(no 1:N or N:N relationships that can be followed)";
+
+        /// <summary>The first line under an expanded N:N relationship: the peer rule.</summary>
+        internal const string PeerHintText = "(peer: nothing is followed unless ticked)";
 
         private static readonly object DummyTag = new object();   // the "Loading..." line of a node not expanded yet
         private static readonly object InfoTag = new object();    // an explanatory line without a tick
@@ -56,7 +62,7 @@ namespace MyscotekDataCopier.UI
         /// <param name="rootDisplayName">Its display name.</param>
         /// <param name="sourceSchema">Source metadata (thread-safe: read on worker threads).</param>
         /// <param name="subgridRelationshipNames">The relationship names of the main-form subgrids of an entity (worker threads).</param>
-        /// <param name="neverCreate">Never-create entities: never offered as child entities.</param>
+        /// <param name="neverCreate">Never-create entities: never offered as child or peer entities.</param>
         /// <param name="configuredSelections">The entities configured so far and their ticked relationships (copied).</param>
         internal RelationshipPickerForm(string rootEntity, string rootDisplayName, ISchemaProvider sourceSchema,
                                         Func<string, IReadOnlyCollection<string>> subgridRelationshipNames, ISet<string> neverCreate,
@@ -89,16 +95,30 @@ namespace MyscotekDataCopier.UI
         internal bool IsLoading => _pendingLoads > 0;
         internal string StatusText => _statusLabel.Text;
 
-        /// <summary>The configured entities and their ticked relationship schema names (a copy): what OK saves.</summary>
+        /// <summary>The configured entities and their ticked relationship schema names (1:N and N:N; a copy): what OK saves.</summary>
         internal IReadOnlyDictionary<string, ISet<string>> ConfiguredSelections =>
             _configured.ToDictionary(p => p.Key, p => (ISet<string>)new HashSet<string>(p.Value, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
 
-        /// <summary>The text of a relationship node, e.g. "Contacts (contact) via parentcustomerid - contact_customer_accounts [subgrid]" (with an em dash).</summary>
+        /// <summary>The text of a 1:N relationship node, e.g. "Contacts (contact) via parentcustomerid - contact_customer_accounts [subgrid]" (with an em dash).</summary>
         internal static string RelationshipText(ChildRelationship relationship, string childDisplayName, bool isSubgrid)
         {
             string child = (relationship.ChildEntity ?? string.Empty).Trim().ToLowerInvariant();
             string name = string.IsNullOrWhiteSpace(childDisplayName) ? child : childDisplayName.Trim();
             string text = $"{name} ({child}) via {relationship.ChildLookupAttribute} — {relationship.SchemaName}";
+            if (isSubgrid) text += " [subgrid]";
+            if (relationship.IsCustomRelationship) text += " [custom]";
+            return text;
+        }
+
+        /// <summary>
+        /// The text of an N:N relationship node of <paramref name="entity"/>, naming the entity at the other
+        /// end, e.g. "Contacts (contact) - ptl_matter_contact [N:N] [subgrid]" (with an em dash).
+        /// </summary>
+        internal static string ManyToManyText(ManyToManyRelationship relationship, string entity, string peerDisplayName, bool isSubgrid)
+        {
+            string peer = relationship.OtherEntity(entity) ?? string.Empty;
+            string name = string.IsNullOrWhiteSpace(peerDisplayName) ? peer : peerDisplayName.Trim();
+            string text = $"{name} ({peer}) — {relationship.SchemaName} [N:N]";
             if (isSubgrid) text += " [subgrid]";
             if (relationship.IsCustomRelationship) text += " [custom]";
             return text;
@@ -113,7 +133,7 @@ namespace MyscotekDataCopier.UI
             SuspendLayout();
             _uiFont = new Font("Segoe UI", 9f);
             Font = _uiFont;
-            Text = $"1:N relationships to copy - {_rootDisplayName} ({_rootEntity})";
+            Text = $"1:N and N:N relationships to copy - {_rootDisplayName} ({_rootEntity})";
             Name = "relationshipPicker";
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -128,10 +148,11 @@ namespace MyscotekDataCopier.UI
                 Name = "introLabel",
                 AutoSize = true,
                 Margin = new Padding(3, 3, 3, 6),
-                Text = "Tick the 1:N relationships whose child records are copied with each record; expand a relationship to choose " +
-                       "the relationships of its child entity in turn. Pre-ticked: the subgrids on the active main forms of the entity " +
-                       "([subgrid]). An entity whose ticks you change keeps them for this source organisation; every other entity " +
-                       "follows its main-form subgrids."
+                Text = "Tick the 1:N relationships whose child records are copied with each record, and the N:N relationships ([N:N]) " +
+                       "whose associated records (peers) are copied - when missing - and associated with it; expand a relationship to choose " +
+                       "the relationships of its entity in turn. Pre-ticked: the subgrids on the active main forms of the entity ([subgrid]). " +
+                       "An entity whose ticks you change keeps them for this source organisation; every other entity follows its main-form " +
+                       "subgrids, but a peer follows nothing unless ticked."
             };
             // Wrap the introduction to the width of the dialog.
             intro.MaximumSize = new Size(ClientSize.Width - 24, 0);
@@ -170,9 +191,9 @@ namespace MyscotekDataCopier.UI
             _cancelButton.DialogResult = DialogResult.Cancel;
             var tips = new ToolTip();
             Disposed += (sender, e) => tips.Dispose();
-            const string target = " (of the selected relationship's child entity, or of the root entity)";
-            tips.SetToolTip(_tickSubgridsButton, "Tick the relationships shown as subgrids on the main forms" + target + ".");
-            tips.SetToolTip(_tickCustomButton, "Tick the custom relationships" + target + ".");
+            const string target = " (of the entity the selected relationship leads to, or of the root entity)";
+            tips.SetToolTip(_tickSubgridsButton, "Tick the 1:N and N:N relationships shown as subgrids on the main forms" + target + ".");
+            tips.SetToolTip(_tickCustomButton, "Tick the custom 1:N and N:N relationships" + target + ".");
             tips.SetToolTip(_untickAllButton, "Untick every relationship" + target + ".");
 
             var actions = new FlowLayoutPanel { Name = "actionButtons", AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
@@ -264,7 +285,7 @@ namespace MyscotekDataCopier.UI
             if (node == null || node.Nodes.Count != 1 || !ReferenceEquals(node.Nodes[0].Tag, DummyTag)) return;
             string entity = EntityOf(node);
             if (entity == null) return;
-            if (_loaded.TryGetValue(entity, out EntityRelationships known)) Populate(node, known);   // an entity met before: at once
+            if (_loaded.TryGetValue(entity, out EntityRelationships known)) Populate(node, known, ListsPeer(node));   // an entity met before: at once
             else LoadInto(node, entity);
         }
 
@@ -277,7 +298,7 @@ namespace MyscotekDataCopier.UI
                 if (IsDisposed || node.TreeView == null) return;
                 if (node.Nodes.Count == 1 && ReferenceEquals(node.Nodes[0].Tag, DummyTag))
                 {
-                    Populate(node, data);
+                    Populate(node, data, ListsPeer(node));
                     node.Expand();   // replacing the only child may reset the native expanded state
                 }
             }
@@ -292,7 +313,7 @@ namespace MyscotekDataCopier.UI
                     node.Nodes.Add(NewPlaceholder(LoadingText, DummyTag));
                     HideCheckBox(node.Nodes[0]);
                 }
-                string message = $"The 1:N relationships of {entity} could not be loaded: {CopyEngine.ErrorText(ex)}";
+                string message = $"The relationships of {entity} could not be loaded: {CopyEngine.ErrorText(ex)}";
                 SetStatus(message);
                 ShowMessage(message, MessageBoxIcon.Error);
             }
@@ -324,33 +345,41 @@ namespace MyscotekDataCopier.UI
         }
 
         /// <summary>
-        /// Worker thread: the metadata of the entity and of its child entities, its eligible 1:N
-        /// relationships and the subgrids on its active main forms. A failure to read the forms is
-        /// reported (nothing is pre-ticked then); a failure to read the entity propagates.
+        /// Worker thread: the metadata of the entity and of the entities its relationships lead to (child
+        /// entities and peer entities), its eligible 1:N and N:N relationships and the subgrids on its
+        /// active main forms. A failure to read the forms is reported (nothing is pre-ticked then); a
+        /// failure to read the entity propagates.
         /// </summary>
         private EntityRelationships ReadRelationships(string entity, IProgress<string> progress)
         {
             progress.Report($"Reading the metadata of {entity}...");
             EntitySchema schema = _schema.GetEntity(entity) ?? throw new InvalidOperationException($"Entity {entity} does not exist in the source.");
-            List<string> children = (schema.OneToManyRelationships ?? Array.Empty<ChildRelationship>())
+            IEnumerable<string> children = (schema.OneToManyRelationships ?? Array.Empty<ChildRelationship>())
                 .Select(r => r?.ChildEntity?.Trim().ToLowerInvariant())
-                .Where(c => !string.IsNullOrEmpty(c) && !ChildRelationshipEligibility.IsSystemExcluded(c) && !_neverCreate.Contains(c))
+                .Where(c => !string.IsNullOrEmpty(c) && !ChildRelationshipEligibility.IsSystemExcluded(c));
+            IEnumerable<string> peers = (schema.ManyToManyRelationships ?? Array.Empty<ManyToManyRelationship>())
+                .Where(r => r != null && !ManyToManyEligibility.IsSystemIntersect(r.IntersectEntity))
+                .Select(r => r.OtherEntity(entity))
+                .Where(p => !string.IsNullOrEmpty(p) && !ManyToManyEligibility.IsExcludedPeerEntity(p));
+            List<string> related = children.Concat(peers)
+                .Where(e => !_neverCreate.Contains(e))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            for (int i = 0; i < children.Count; i++)
+            for (int i = 0; i < related.Count; i++)
             {
-                progress.Report(string.Format(CultureInfo.CurrentCulture, "Reading the metadata of the child entities of {0}: {1} / {2} ({3})...",
-                    entity, i + 1, children.Count, children[i]));
+                progress.Report(string.Format(CultureInfo.CurrentCulture, "Reading the metadata of the related entities of {0}: {1} / {2} ({3})...",
+                    entity, i + 1, related.Count, related[i]));
                 try
                 {
-                    _schema.GetEntity(children[i]);
+                    _schema.GetEntity(related[i]);
                 }
                 catch (Exception)
                 {
-                    // Not eligible then (ChildRelationshipEligibility treats it so).
+                    // Not eligible then (the eligibility rules treat it so).
                 }
             }
             IReadOnlyList<ChildRelationship> eligible = ChildRelationshipEligibility.GetEligible(_schema, entity, _neverCreate);
+            IReadOnlyList<ManyToManyRelationship> eligibleManyToMany = ManyToManyEligibility.GetEligible(_schema, entity, _neverCreate);
 
             progress.Report($"Reading the main forms of {entity}...");
             var subgrids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -364,16 +393,17 @@ namespace MyscotekDataCopier.UI
                 subgridProblem = CopyEngine.ErrorText(ex);
             }
 
-            var childNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (ChildRelationship relationship in eligible)
+            var entityNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            IEnumerable<string> shown = eligible.Select(r => r.ChildEntity.Trim().ToLowerInvariant())
+                .Concat(eligibleManyToMany.Select(r => r.OtherEntity(entity)));
+            foreach (string name in shown)
             {
-                string child = relationship.ChildEntity.Trim().ToLowerInvariant();
-                if (!childNames.ContainsKey(child)) childNames[child] = ChildDisplayName(child);
+                if (!entityNames.ContainsKey(name)) entityNames[name] = PluralDisplayName(name);
             }
-            return new EntityRelationships(entity, eligible, subgrids, childNames, subgridProblem);
+            return new EntityRelationships(entity, eligible, eligibleManyToMany, subgrids, entityNames, subgridProblem);
         }
 
-        private string ChildDisplayName(string entity)
+        private string PluralDisplayName(string entity)
         {
             try
             {
@@ -412,20 +442,39 @@ namespace MyscotekDataCopier.UI
             }
         }
 
-        /// <summary>Shows the eligible relationships of an entity under <paramref name="owner"/>: subgrids first, then by name.</summary>
-        private void Populate(TreeNode owner, EntityRelationships data)
+        /// <summary>
+        /// Shows the eligible 1:N and N:N relationships of an entity under <paramref name="owner"/>:
+        /// subgrids first, then by text. Under an N:N relationship (<paramref name="asPeer"/>) the entity
+        /// is a peer: a first line says so, and an unconfigured peer has nothing ticked.
+        /// </summary>
+        private void Populate(TreeNode owner, EntityRelationships data, bool asPeer)
         {
             var placeholders = new List<TreeNode>();
             var rows = data.Eligible
-                .Select(r => new { Relationship = r, IsSubgrid = data.Subgrids.Contains(r.SchemaName) })
-                .Select(r => new
+                .Select(r =>
                 {
-                    r.Relationship,
-                    r.IsSubgrid,
-                    Text = RelationshipText(r.Relationship,
-                        data.ChildNames.TryGetValue(r.Relationship.ChildEntity.Trim(), out string childName) ? childName : null, r.IsSubgrid)
+                    bool isSubgrid = data.Subgrids.Contains(r.SchemaName);
+                    string child = r.ChildEntity.Trim().ToLowerInvariant();
+                    return new
+                    {
+                        Tag = new RelationshipTag(data.Entity, r, isSubgrid, asPeer),
+                        Text = RelationshipText(r, data.EntityNames.TryGetValue(child, out string childName) ? childName : null, isSubgrid),
+                        ToolTip = $"{r.SchemaName}: the {child} records whose {r.ChildLookupAttribute} points at the {data.Entity}"
+                    };
                 })
-                .OrderByDescending(r => r.IsSubgrid)
+                .Concat(data.EligibleManyToMany.Select(r =>
+                {
+                    bool isSubgrid = data.Subgrids.Contains(r.SchemaName);
+                    string peer = r.OtherEntity(data.Entity);
+                    return new
+                    {
+                        Tag = new RelationshipTag(data.Entity, r, isSubgrid, asPeer),
+                        Text = ManyToManyText(r, data.Entity, data.EntityNames.TryGetValue(peer, out string peerName) ? peerName : null, isSubgrid),
+                        ToolTip = $"{r.SchemaName}: the {peer} records associated with the {data.Entity} (through {r.IntersectEntity}), " +
+                                  "created when missing and then associated"
+                    };
+                }))
+                .OrderByDescending(r => r.Tag.IsSubgrid)
                 .ThenBy(r => r.Text, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
 
@@ -434,22 +483,22 @@ namespace MyscotekDataCopier.UI
             try
             {
                 owner.Nodes.Clear();
+                if (asPeer)
+                {
+                    TreeNode hint = NewPlaceholder(PeerHintText, InfoTag);
+                    owner.Nodes.Add(hint);
+                    placeholders.Add(hint);
+                }
                 foreach (var row in rows)
                 {
-                    ChildRelationship relationship = row.Relationship;
-                    var node = new TreeNode(row.Text)
-                    {
-                        Name = relationship.SchemaName,
-                        Tag = new RelationshipTag(data.Entity, relationship, row.IsSubgrid),
-                        ToolTipText = $"{relationship.SchemaName}: the {relationship.ChildEntity} records whose {relationship.ChildLookupAttribute} points at the {data.Entity}"
-                    };
+                    var node = new TreeNode(row.Text) { Name = row.Tag.SchemaName, Tag = row.Tag, ToolTipText = row.ToolTip };
                     TreeNode dummy = NewPlaceholder(LoadingText, DummyTag);
                     node.Nodes.Add(dummy);
                     placeholders.Add(dummy);
                     owner.Nodes.Add(node);
-                    node.Checked = IsTicked(data.Entity, relationship.SchemaName);   // once in the tree (AfterCheck is muted meanwhile)
+                    node.Checked = IsTicked(data.Entity, row.Tag.SchemaName, asPeer);   // once in the tree (AfterCheck is muted meanwhile)
                 }
-                if (owner.Nodes.Count == 0)
+                if (rows.Count == 0)
                 {
                     TreeNode none = NewPlaceholder(NoRelationshipsText, InfoTag);
                     owner.Nodes.Add(none);
@@ -476,27 +525,34 @@ namespace MyscotekDataCopier.UI
         private void OnAfterCheck(object sender, TreeViewEventArgs e)
         {
             if (_syncing || !(e.Node?.Tag is RelationshipTag tag)) return;
-            HashSet<string> ticked = Configure(tag.ParentEntity);
-            if (e.Node.Checked) ticked.Add(tag.Relationship.SchemaName);
-            else ticked.Remove(tag.Relationship.SchemaName);
+            HashSet<string> ticked = Configure(tag.ParentEntity, tag.ParentIsPeer);
+            if (e.Node.Checked) ticked.Add(tag.SchemaName);
+            else ticked.Remove(tag.SchemaName);
             SyncEntity(tag.ParentEntity);
         }
 
-        private bool IsTicked(string entity, string relationship) =>
+        /// <summary>
+        /// Is the relationship of the entity ticked: its configured ticks, else (unconfigured) its
+        /// main-form subgrids - and nothing where the entity is listed as a peer.
+        /// </summary>
+        private bool IsTicked(string entity, string relationship, bool asPeer) =>
             _configured.TryGetValue(entity, out HashSet<string> ticked)
                 ? ticked.Contains(relationship)
-                : _loaded.TryGetValue(entity, out EntityRelationships data) && data.Subgrids.Contains(relationship);
+                : !asPeer && _loaded.TryGetValue(entity, out EntityRelationships data) && data.Subgrids.Contains(relationship);
 
-        /// <summary>The ticked set of an entity, which becomes configured - starting from the ticks it showed (its subgrids).</summary>
-        private HashSet<string> Configure(string entity)
+        /// <summary>
+        /// The ticked set of an entity, which becomes configured - starting from the ticks it showed where
+        /// it was changed: its eligible subgrids, or nothing where it is listed as a peer.
+        /// </summary>
+        private HashSet<string> Configure(string entity, bool asPeer)
         {
             if (_configured.TryGetValue(entity, out HashSet<string> ticked)) return ticked;
             ticked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (_loaded.TryGetValue(entity, out EntityRelationships data))
+            if (!asPeer && _loaded.TryGetValue(entity, out EntityRelationships data))
             {
-                foreach (ChildRelationship relationship in data.Eligible)
+                foreach (string relationship in data.SchemaNames)
                 {
-                    if (data.Subgrids.Contains(relationship.SchemaName)) ticked.Add(relationship.SchemaName);
+                    if (data.Subgrids.Contains(relationship)) ticked.Add(relationship);
                 }
             }
             _configured[entity] = ticked;
@@ -512,7 +568,7 @@ namespace MyscotekDataCopier.UI
                 foreach (TreeNode node in AllNodes(_tree.Nodes))
                 {
                     if (!(node.Tag is RelationshipTag tag) || !string.Equals(tag.ParentEntity, entity, StringComparison.OrdinalIgnoreCase)) continue;
-                    bool ticked = IsTicked(entity, tag.Relationship.SchemaName);
+                    bool ticked = IsTicked(entity, tag.SchemaName, tag.ParentIsPeer);
                     if (node.Checked != ticked) node.Checked = ticked;
                 }
             }
@@ -532,14 +588,14 @@ namespace MyscotekDataCopier.UI
             }
         }
 
-        /// <summary>E.g. "Configured: account (2 ticked), contact (none). Every other entity follows its main-form subgrids."</summary>
+        /// <summary>E.g. "Configured: account (2 ticked), contact (none). Every other entity follows its main-form subgrids (as a peer: nothing)."</summary>
         private string SelectionSummary()
         {
-            if (_configured.Count == 0) return "No entity configured: every entity follows the subgrids on its main forms.";
+            if (_configured.Count == 0) return "No entity configured: every entity follows the subgrids on its main forms (as a peer: nothing).";
             string configured = string.Join(", ", _configured
                 .OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(p => p.Key + " (" + (p.Value.Count == 0 ? "none" : p.Value.Count.ToString(CultureInfo.CurrentCulture) + " ticked") + ")"));
-            return "Configured: " + configured + ". Every other entity follows its main-form subgrids.";
+            return "Configured: " + configured + ". Every other entity follows its main-form subgrids (as a peer: nothing).";
         }
 
         // =====================================================================================
@@ -549,9 +605,9 @@ namespace MyscotekDataCopier.UI
         private void OnTickSubgridsClick(object sender, EventArgs e) =>
             ApplyToTarget((ticked, data) =>
             {
-                foreach (ChildRelationship relationship in data.Eligible)
+                foreach (string relationship in data.SchemaNames)
                 {
-                    if (data.Subgrids.Contains(relationship.SchemaName)) ticked.Add(relationship.SchemaName);
+                    if (data.Subgrids.Contains(relationship)) ticked.Add(relationship);
                 }
             });
 
@@ -562,14 +618,18 @@ namespace MyscotekDataCopier.UI
                 {
                     if (relationship.IsCustomRelationship) ticked.Add(relationship.SchemaName);
                 }
+                foreach (ManyToManyRelationship relationship in data.EligibleManyToMany)
+                {
+                    if (relationship.IsCustomRelationship) ticked.Add(relationship.SchemaName);
+                }
             });
 
         private void OnUntickAllClick(object sender, EventArgs e) => ApplyToTarget((ticked, data) => ticked.Clear());
 
         /// <summary>
-        /// Applies a button to the relationships under the selected node - the child entity of a
-        /// relationship, or the root entity (also when nothing is selected): loads them if needed,
-        /// changes the ticked set of that entity (which becomes configured) and shows the result.
+        /// Applies a button to the relationships under the selected node - those of the entity a
+        /// relationship leads to, or of the root entity (also when nothing is selected): loads them if
+        /// needed, changes the ticked set of that entity (which becomes configured) and shows the result.
         /// </summary>
         private async void ApplyToTarget(Action<HashSet<string>, EntityRelationships> change)
         {
@@ -578,18 +638,19 @@ namespace MyscotekDataCopier.UI
             target = target ?? _root;
             if (target == null) return;
             string entity = EntityOf(target);
+            bool asPeer = ListsPeer(target);
             try
             {
                 EntityRelationships data = await LoadAsync(entity);
                 if (IsDisposed) return;
-                change(Configure(entity), data);
+                change(Configure(entity, asPeer), data);
                 SyncEntity(entity);
                 if (target.TreeView != null) target.Expand();   // shows the relationships just changed
             }
             catch (Exception ex)
             {
                 if (IsDisposed) return;
-                string message = $"The 1:N relationships of {entity} could not be loaded: {CopyEngine.ErrorText(ex)}";
+                string message = $"The relationships of {entity} could not be loaded: {CopyEngine.ErrorText(ex)}";
                 SetStatus(message);
                 ShowMessage(message, MessageBoxIcon.Error);
             }
@@ -599,15 +660,29 @@ namespace MyscotekDataCopier.UI
         // Helpers
         // =====================================================================================
 
-        /// <summary>The entity whose relationships a node lists: the root entity, or the child entity of a relationship.</summary>
+        /// <summary>
+        /// The entity whose relationships a node lists: the root entity, the child entity of a 1:N
+        /// relationship, or the entity at the other end of an N:N relationship.
+        /// </summary>
         private string EntityOf(TreeNode node)
         {
             for (TreeNode current = node; current != null; current = current.Parent)
             {
-                if (current.Tag is RelationshipTag relationship) return relationship.Relationship.ChildEntity.Trim().ToLowerInvariant();
+                if (current.Tag is RelationshipTag relationship) return relationship.TargetEntity;
                 if (current.Tag is EntityTag root) return root.Entity;
             }
             return null;
+        }
+
+        /// <summary>True when the relationships a node lists are those of a peer: the node is an N:N relationship.</summary>
+        private static bool ListsPeer(TreeNode node)
+        {
+            for (TreeNode current = node; current != null; current = current.Parent)
+            {
+                if (current.Tag is RelationshipTag relationship) return relationship.IsManyToMany;
+                if (current.Tag is EntityTag) return false;
+            }
+            return false;
         }
 
         private void SetStatus(string text)
@@ -661,39 +736,73 @@ namespace MyscotekDataCopier.UI
             public string Entity { get; }
         }
 
-        /// <summary>The tag of a relationship node: whose relationship it is, and whether a main form shows it.</summary>
+        /// <summary>
+        /// The tag of a relationship node: whose relationship it is (and whether that entity is listed as a
+        /// peer there), the 1:N or the N:N relationship, and whether a main form shows it.
+        /// </summary>
         internal sealed class RelationshipTag
         {
-            public RelationshipTag(string parentEntity, ChildRelationship relationship, bool isSubgrid)
+            public RelationshipTag(string parentEntity, ChildRelationship relationship, bool isSubgrid, bool parentIsPeer)
             {
                 ParentEntity = parentEntity;
                 Relationship = relationship;
                 IsSubgrid = isSubgrid;
+                ParentIsPeer = parentIsPeer;
             }
 
+            public RelationshipTag(string parentEntity, ManyToManyRelationship relationship, bool isSubgrid, bool parentIsPeer)
+            {
+                ParentEntity = parentEntity;
+                ManyToMany = relationship;
+                IsSubgrid = isSubgrid;
+                ParentIsPeer = parentIsPeer;
+            }
+
+            /// <summary>The entity the relationship belongs to: the entity of the node above.</summary>
             public string ParentEntity { get; }
+
+            /// <summary>The 1:N relationship (null for an N:N one).</summary>
             public ChildRelationship Relationship { get; }
+
+            /// <summary>The N:N relationship (null for a 1:N one).</summary>
+            public ManyToManyRelationship ManyToMany { get; }
+
             public bool IsSubgrid { get; }
+
+            /// <summary>The parent entity is listed as a peer there (unconfigured, it has nothing ticked).</summary>
+            public bool ParentIsPeer { get; }
+
+            public bool IsManyToMany => ManyToMany != null;
+
+            public string SchemaName => IsManyToMany ? ManyToMany.SchemaName : Relationship.SchemaName;
+
+            /// <summary>The entity the node expands into: the child entity (1:N) or the entity at the other end (N:N).</summary>
+            public string TargetEntity => IsManyToMany ? ManyToMany.OtherEntity(ParentEntity) : Relationship.ChildEntity.Trim().ToLowerInvariant();
         }
 
-        /// <summary>What the dialog knows of one entity: its eligible relationships, main-form subgrids and child display names.</summary>
+        /// <summary>What the dialog knows of one entity: its eligible relationships, main-form subgrids and the names of the entities they lead to.</summary>
         private sealed class EntityRelationships
         {
-            public EntityRelationships(string entity, IReadOnlyList<ChildRelationship> eligible, HashSet<string> subgrids,
-                                       Dictionary<string, string> childNames, string subgridProblem)
+            public EntityRelationships(string entity, IReadOnlyList<ChildRelationship> eligible, IReadOnlyList<ManyToManyRelationship> eligibleManyToMany,
+                                       HashSet<string> subgrids, Dictionary<string, string> entityNames, string subgridProblem)
             {
                 Entity = entity;
                 Eligible = eligible;
+                EligibleManyToMany = eligibleManyToMany;
                 Subgrids = subgrids;
-                ChildNames = childNames;
+                EntityNames = entityNames;
                 SubgridProblem = subgridProblem;
             }
 
             public string Entity { get; }
             public IReadOnlyList<ChildRelationship> Eligible { get; }
+            public IReadOnlyList<ManyToManyRelationship> EligibleManyToMany { get; }
             public HashSet<string> Subgrids { get; }
-            public Dictionary<string, string> ChildNames { get; }
-            public string SubgridProblem { get; set; }   // the forms could not be read (reported once)
+            public Dictionary<string, string> EntityNames { get; }   // child and peer entities: their plural display names
+            public string SubgridProblem { get; set; }               // the forms could not be read (reported once)
+
+            /// <summary>The schema names of the eligible relationships: 1:N, then N:N.</summary>
+            public IEnumerable<string> SchemaNames => Eligible.Select(r => r.SchemaName).Concat(EligibleManyToMany.Select(r => r.SchemaName));
         }
 
         /// <summary>

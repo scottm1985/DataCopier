@@ -99,12 +99,12 @@ namespace MyscotekDataCopier.Tests
                     Assert.Equal("Preserve created on (overriddencreatedon)", UiTestHost.Find<CheckBox>(control, "preserveCreatedOnCheckBox").Text);
                     Assert.Equal("Bypass custom plugins (online only)", UiTestHost.Find<CheckBox>(control, "bypassPluginsCheckBox").Text);
 
-                    // relationship options (SPEC 5.10): lookups on, children off, Relationships... needs both an entity and the 1:N option
+                    // relationship options (SPEC 5.10): lookups on, children (1:N and N:N) off, Relationships... needs both an entity and that option
                     CheckBox copyLookups = UiTestHost.Find<CheckBox>(control, "copyLookupsCheckBox");
                     CheckBox copyChildren = UiTestHost.Find<CheckBox>(control, "copyChildrenCheckBox");
                     Button relationships = UiTestHost.Find<Button>(control, "relationshipsButton");
                     Assert.Equal("Create related records for N:1 relationships (lookups)", copyLookups.Text);
-                    Assert.Equal("Create related records for 1:N relationships (subgrids)", copyChildren.Text);
+                    Assert.Equal("Create related records for 1:N and N:N relationships (subgrids)", copyChildren.Text);
                     Assert.Equal("Relationships...", relationships.Text);
                     Assert.True(copyLookups.Enabled && copyLookups.Checked);
                     Assert.True(copyChildren.Enabled);
@@ -437,21 +437,33 @@ namespace MyscotekDataCopier.Tests
                 DataCopierControl.FormatProgress(new CopyProgress { SelectedIndex = 25, SelectedTotal = 25, Updated = 25, SkippedExisting = 4 }));
             Assert.Equal("1 / 2 - created 9, children found 8, failed 0",
                 DataCopierControl.FormatProgress(new CopyProgress { SelectedIndex = 1, SelectedTotal = 2, Created = 9, ChildRecordsFound = 8 }));
+            // N:N (SPEC 5.10): peers found and the associations, each only when not zero.
+            Assert.Equal("1 / 2 - created 3, peers found 4, associated 2, associations skipped 1, associations failed 1, failed 0",
+                DataCopierControl.FormatProgress(new CopyProgress
+                {
+                    SelectedIndex = 1, SelectedTotal = 2, Created = 3, PeerRecordsFound = 4, AssociationsCreated = 2, AssociationsSkipped = 1, AssociationsFailed = 1
+                }));
+            Assert.Equal("2 / 2 - created 1, associations skipped 3, failed 0",
+                DataCopierControl.FormatProgress(new CopyProgress { SelectedIndex = 2, SelectedTotal = 2, Created = 1, AssociationsSkipped = 3 }));
         }
 
         [Fact]
         public void Relationship_lines_describe_the_saved_selections_and_the_effective_relationships()
         {
-            Assert.Equal("1:N relationships: no entity configured; every entity follows the subgrids on its active main forms.",
+            Assert.Equal("1:N and N:N relationships: no entity configured; every entity follows the subgrids on its active main forms " +
+                         "(as a peer through an N:N relationship: nothing).",
                 DataCopierControl.DescribeConfiguredRelationships(new Dictionary<string, ISet<string>>()));
-            Assert.Equal("1:N relationships saved - account: Account_Tasks, contact_customer_accounts; contact: none. " +
-                         "Every other entity follows the subgrids on its active main forms.",
+            Assert.Equal("1:N and N:N relationships saved - account: accountleads_association, Account_Tasks, contact_customer_accounts; contact: none. " +
+                         "Every other entity follows the subgrids on its active main forms (as a peer through an N:N relationship: nothing).",
                 DataCopierControl.DescribeConfiguredRelationships(new Dictionary<string, ISet<string>>
                 {
                     ["contact"] = new HashSet<string>(),
-                    ["account"] = new HashSet<string> { "contact_customer_accounts", "Account_Tasks" }
+                    ["account"] = new HashSet<string> { "contact_customer_accounts", "Account_Tasks", "accountleads_association" }
                 }));
 
+            const string Others = "Other entities reached as child records follow the relationships ticked for them in Relationships..., otherwise the subgrids " +
+                                  "on their active main forms; records reached through N:N relationships (peers) are created when missing, then associated, " +
+                                  "and follow only the relationships ticked for their entity.";
             FakeSchemaProvider schema = ChildRelationshipSelectorTests.EligibilitySchema();
             var configured = new DefaultChildRelationshipSelector(schema, entity => Array.Empty<string>(),
                 new Dictionary<string, ISet<string>> { ["account"] = new HashSet<string> { "Account_Annotation", "contact_customer_accounts" } },
@@ -459,12 +471,25 @@ namespace MyscotekDataCopier.Tests
             Assert.Equal(new[]
             {
                 "1:N relationships followed from account (ticked in Relationships...): contact_customer_accounts (contact.parentcustomerid), Account_Annotation (annotation.objectid)",
-                "Other entities reached as child records follow the relationships ticked for them in Relationships..., otherwise the subgrids on their active main forms."
+                "N:N relationships followed from account (ticked in Relationships...): none",
+                Others
             }, DataCopierControl.DescribeChildRelationships(configured, "account"));
 
+            // N:N relationships: by schema name and the entity at the other end (account itself for a self-referential one), metadata order.
+            var withPeers = new DefaultChildRelationshipSelector(ChildRelationshipSelectorTests.ManyToManySchema(),
+                entity => new[] { "new_account_account", "accountleads_association", "contact_customer_accounts", "new_account_role" }, null,
+                new CopyOptions().NeverCreateEntities);
+            Assert.Equal(new[]
+            {
+                "1:N relationships followed from account (the subgrids on its active main forms): contact_customer_accounts (contact.parentcustomerid)",
+                "N:N relationships followed from account (the subgrids on its active main forms): accountleads_association (lead), new_account_account (account)",
+                Others
+            }, DataCopierControl.DescribeChildRelationships(withPeers, "account"));
+
             var failing = new DefaultChildRelationshipSelector(schema, entity => throw new InvalidOperationException("forms unavailable"), null, null);
-            Assert.Equal("1:N relationships followed from account (the subgrids on its active main forms): could not be determined: forms unavailable",
-                DataCopierControl.DescribeChildRelationships(failing, "account")[0]);
+            IList<string> failed = DataCopierControl.DescribeChildRelationships(failing, "account");
+            Assert.Equal("1:N relationships followed from account (the subgrids on its active main forms): could not be determined: forms unavailable", failed[0]);
+            Assert.Equal("N:N relationships followed from account (the subgrids on its active main forms): could not be determined: forms unavailable", failed[1]);
             var none = new DefaultChildRelationshipSelector(schema, entity => Array.Empty<string>(), null, null);
             Assert.Equal("1:N relationships followed from account (the subgrids on its active main forms): none",
                 DataCopierControl.DescribeChildRelationships(none, "account")[0]);
@@ -485,22 +510,54 @@ namespace MyscotekDataCopier.Tests
             Assert.Equal(new[]
             {
                 "---- Summary (dry run - nothing was written) (cancelled): 25 selected records ----",
-                "  Created             41",
-                "  Updated             2",
-                "  Skipped (existed)   7",
-                "  Failed              1",
-                "  Lookups blanked     3",
-                "  Lookups backfilled  1",
-                "  Child records found 12",
-                "  State changes       4",
-                "  Elapsed             01:01:23",
+                "  Created              41",
+                "  Updated              2",
+                "  Skipped (existed)    7",
+                "  Failed               1",
+                "  Lookups blanked      3",
+                "  Lookups backfilled   1",
+                "  Child records found  12",
+                "  State changes        4",
+                "  Elapsed              01:01:23",
                 "  Errors (1):",
                 "    FAILED to create contact \"Jane\" (x): boom"
-            }, lines.Select(l => l.Text));
+            }, lines.Select(l => l.Text));   // no N:N counts: none was other than zero
             Assert.Equal(LogLevel.Warning, lines[0].Level);
             Assert.Equal(LogLevel.Error, lines[4].Level);
             Assert.Equal(LogLevel.Error, lines[11].Level);
             Assert.Equal(LogLevel.Success, DataCopierControl.BuildSummaryLines(new CopySummary { SelectedTotal = 1, Created = 1 })[0].Level);
+        }
+
+        [Fact]
+        public void Summary_block_lists_the_N_N_counts_that_are_not_zero_after_the_child_records()
+        {
+            var summary = new CopySummary
+            {
+                SelectedTotal = 1, Created = 3, PeerRecordsFound = 5, AssociationsCreated = 3, AssociationsFailed = 2, Elapsed = TimeSpan.FromSeconds(4)
+            };
+
+            IList<(LogLevel Level, string Text)> lines = DataCopierControl.BuildSummaryLines(summary);
+
+            Assert.Equal(new[]
+            {
+                "---- Summary: 1 selected record ----",
+                "  Created              3",
+                "  Updated              0",
+                "  Skipped (existed)    0",
+                "  Failed               0",
+                "  Lookups blanked      0",
+                "  Lookups backfilled   0",
+                "  Child records found  0",
+                "  Peer records found   5",
+                "  Associations created 3",
+                "  Associations failed  2",
+                "  State changes        0",
+                "  Elapsed              00:00:04"
+            }, lines.Select(l => l.Text));
+            Assert.Equal(LogLevel.Success, lines[0].Level);   // failed associations are warnings, not failed records
+            Assert.Equal(LogLevel.Warning, lines[10].Level);
+            Assert.Equal("  Associations skipped 7",
+                Assert.Single(DataCopierControl.BuildSummaryLines(new CopySummary { AssociationsSkipped = 7 }), l => l.Text.Contains("Associations")).Text);
         }
 
         [Fact]
