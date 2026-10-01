@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <!-- The XrmToolBox Tool Library package. <version> must equal the assembly version in
+         src\MyscotekDataCopier\Properties\AssemblyInfo.cs, or the Tool Library offers an update
+         forever: build-package.ps1 refuses to pack when they differ. -->
+    <id>Myscotek.DataCopier</id>
+    <version>1.2026.10.1</version>
+    <title>Data Copier</title>
+    <authors>Myscotek</authors>
+    <owners>Myscotek</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <license type="expression">MIT</license>
+    <projectUrl>https://github.com/scottm1985/DataCopier</projectUrl>
+    <!-- The Tool Library shows iconUrl; NuGet clients show the packed icon (iconUrl alone is deprecated). -->
+    <iconUrl>https://raw.githubusercontent.com/scottm1985/DataCopier/main/images/icon-128.png</iconUrl>
+    <icon>images/icon-128.png</icon>
+    <repository type="git" url="https://github.com/scottm1985/DataCopier" />
+    <summary>Copies selected Dataverse / Dynamics 365 records to another environment with the same GUIDs, with the records their lookups point at and, optionally, their child records.</summary>
+    <description>
+      XrmToolBox tool. Pick an entity and a view in the source environment, tick the records you want and copy
+      them to a destination environment (Dataverse online or Dynamics 365 on-premises 9.x), keeping the same GUIDs.
+      The records they point at through lookups are copied first, as deep as needed, so the lookups still resolve;
+      optionally their child records (the subgrids of each entity, or the 1:N relationships you choose) come along
+      too. Records that already exist are updated or skipped by clear rules, users, teams and currencies are never
+      created, virtual tables are only checked, closing states (won opportunities, resolved cases and so on) are
+      applied with the platform's close messages, and a dry run shows everything that would happen. Every step is
+      written to a colour-coded log.
+    </description>
+    <releaseNotes>
+      1.2026.10.1 - first public release.
+      - Copy the ticked records of any view with the same GUIDs; a selected record that exists is updated.
+      - Copy N:1 relationships (lookups): the records they point at are created first, recursively; an existing
+        one is skipped; circular references are backfilled.
+      - Copy 1:N relationships (subgrids): child records, recursively; per entity, the main-form subgrids or the
+        relationships ticked in the Relationships picker.
+      - Users, teams, business units, the organisation and currencies are never created; virtual tables are
+        checked by id and never written.
+      - Closing states applied once the record's tree is done, with the close messages (win/lose opportunity,
+        close case, win/close quote, cancel/fulfil order).
+      - Dry run, preserve created on, bypass custom plugins (online), personal views, paging, client-side filter.
+      - Colour-coded log with copy and save, a summary and the errors of every run.
+    </releaseNotes>
+    <copyright>Copyright (c) 2026 Myscotek</copyright>
+    <!-- The "XrmToolBox" tag is what the Tool Library looks for. -->
+    <tags>XrmToolBox Plugins Dataverse Dynamics365 Data Copy Records Migration Myscotek</tags>
+    <dependencies>
+      <dependency id="XrmToolBox" version="1.2025.10.74" />
+    </dependencies>
+  </metadata>
+  <files>
+    <!-- XrmToolBox installs lib\net48\Plugins\* into its Plugins folder. Only the tool's own assembly
+         ships: XrmToolBox provides the XrmToolBox, McTools, Dataverse SDK and Newtonsoft assemblies. -->
+    <file src="src\MyscotekDataCopier\bin\Release\MyscotekDataCopier.dll" target="lib\net48\Plugins" />
+    <file src="images\icon-128.png" target="images\" />
+  </files>
+</package>

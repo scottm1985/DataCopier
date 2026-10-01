@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>MyscotekDataCopier.Tests</RootNamespace>
+    <AssemblyName>MyscotekDataCopier.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <!-- The plugin references the SDK with ExcludeAssets="runtime" (XrmToolBox provides it at run
+         time), and that exclusion flows through the project reference. The tests reference it
+         directly WITH runtime assets so Microsoft.Xrm.Sdk.dll and friends are copied to the test bin. -->
+    <PackageReference Include="Microsoft.CrmSdk.CoreAssemblies" Version="9.0.2.60" />
+  </ItemGroup>
+
+  <!--
+    UI tests (UiSmokeTests.cs, UiTestHost.cs) construct the real DataCopierControl, so three host
+    assemblies must be present at run time. They are referenced compile-only (same pins as the plugin;
+    GeneratePathProperty gives the package folders) and ONLY these three files are copied next to the
+    tests. Everything else in XrmToolBoxPackage's dependency tree stays out on purpose - in particular
+    Microsoft.Toolkit.Uwp.Notifications: PluginControlBase's constructor subscribes to its
+    ToastNotificationManagerCompat.OnActivated, whose static initialiser registers the running process
+    for toast notifications in HKCU (COM LocalServer32 + AppUserModelId) and saves an icon under
+    %LocalAppData%. UiTestHost satisfies that reference with an in-memory stub instead.
+    Microsoft.Xrm.Tooling.Connector is needed because ConnectionDetail has a field of one of its enums.
+  -->
+  <ItemGroup>
+    <PackageReference Include="XrmToolBoxPackage" Version="1.2025.10.74" GeneratePathProperty="true">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="MscrmTools.Xrm.Connection" Version="1.2025.9.64" GeneratePathProperty="true">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.CrmSdk.XrmTooling.CoreAssembly" Version="9.1.1.65" GeneratePathProperty="true">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(PkgXrmToolBoxPackage)\lib\net48\XrmToolBox.Extensibility.dll" Link="XrmToolBox.Extensibility.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="$(PkgMscrmTools_Xrm_Connection)\lib\net48\McTools.Xrm.Connection.dll" Link="McTools.Xrm.Connection.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="$(PkgMicrosoft_CrmSdk_XrmTooling_CoreAssembly)\lib\net462\Microsoft.Xrm.Tooling.Connector.dll" Link="Microsoft.Xrm.Tooling.Connector.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ExportAttribute / ExportMetadataAttribute (PluginMetadataTests). -->
+    <Reference Include="System.ComponentModel.Composition" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MyscotekDataCopier\MyscotekDataCopier.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,18 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+
+# Packaging (build-package.ps1): the package and the downloaded nuget.exe
+dist/
+tools/nuget.exe
+
+# IDE / user files
+.vs/
+*.user
+*.suo
+
+# Test results
+TestResults/
+
+# Local Claude Code settings
+.claude/settings.local.json

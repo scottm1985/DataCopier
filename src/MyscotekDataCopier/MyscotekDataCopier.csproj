@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Data Copier (by Myscotek) - an XrmToolBox tool that copies selected records from a source
+    environment to a destination environment keeping the same GUIDs (see SPEC.md).
+
+    Build:   dotnet build MyscotekDataCopier.sln -c Release   (from the repository root)
+    Package: .\build-package.ps1   (the Tool Library NuGet package, in dist\)
+    Deploy by hand: copy bin\Release\MyscotekDataCopier.dll to %AppData%\MscrmTools\XrmToolBox\Plugins
+            (XrmToolBox must be closed). It is the ONLY file deployed: every package below is
+            referenced with ExcludeAssets="runtime" because XrmToolBox ships those assemblies.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>MyscotekDataCopier</RootNamespace>
+    <AssemblyName>MyscotekDataCopier</AssemblyName>
+    <!-- AssemblyInfo.cs is hand-written: it carries AssemblyCompany (XrmToolBox needs it) and the
+         release version, which must equal the version in Myscotek.DataCopier.nuspec. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- A fixed release version (no wildcard), so builds are deterministic. -->
+    <Deterministic>true</Deterministic>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- XrmToolBox plugin SDK (PluginBase / PluginControlBase). The host provides it at run time. -->
+    <PackageReference Include="XrmToolBoxPackage" Version="1.2025.10.74">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <!-- Pinned explicitly: XrmToolBoxPackage 1.2025.10.74 is built against McTools.Xrm.Connection
+         1.2025.9.64 but lets NuGet pick 1.2025.7.63 transitively, which causes CS1705/MSB3277.
+         Keep this in step with XrmToolBoxPackage. -->
+    <PackageReference Include="MscrmTools.Xrm.Connection" Version="1.2025.9.64">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <!-- Dataverse SDK (Microsoft.Xrm.Sdk, Microsoft.Crm.Sdk.Proxy). The host provides it at run time. -->
+    <PackageReference Include="Microsoft.CrmSdk.CoreAssemblies" Version="9.0.2.60">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MEF ([Export]/[ExportMetadata]) and the WCF fault types used by the SDK. -->
+    <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.ServiceModel" />
+  </ItemGroup>
+
+</Project>
