@@ -45,6 +45,9 @@ namespace MyscotekDataCopier.Tests
                     Assert.Equal(new[] { "Account", "Contact", "User" }, entities.Items.Cast<ListViewItem>().Select(i => i.Text));
                     Assert.Equal("account", Assert.Single(entities.SelectedItems.Cast<ListViewItem>()).Name);
                     Assert.Equal("Active Accounts", views.Text);
+                    // The system views, then the personal views (always listed, after them whatever their names).
+                    Assert.Equal(new[] { "Active Accounts", "Active Accounts and Primary Contacts", "Accounts I Follow (personal)" },
+                        views.Items.Cast<object>().Select(views.GetItemText));
                     Assert.Equal("Source: (unnamed connection)", UiTestHost.FindToolItem<ToolStripLabel>(control, "sourceLabel").Text);
                     Assert.Contains("3 entities loaded from the source.", UiTest.LogText(control));
 
@@ -120,8 +123,8 @@ namespace MyscotekDataCopier.Tests
 
                     string log = UiTest.LogText(control);
                     Assert.Contains("] Copying 2 account records from (unnamed connection) to (unnamed connection)", log);
-                    Assert.Contains("] Options: dry run on, preserve created on off, bypass custom plugins off, copy N:1 relationships (lookups) on, " +
-                                    "copy 1:N relationships (subgrids) off; never created: businessunit, organization, systemuser, team, transactioncurrency", log);
+                    Assert.Contains("] Options: dry run on, preserve created on off, bypass custom plugins off, create related records for N:1 relationships (lookups) on, " +
+                                    "create related records for 1:N relationships (subgrids) off; never created: businessunit, organization, systemuser, team, transactioncurrency", log);
                     Assert.DoesNotContain("1:N relationships followed", log);
                     Assert.Contains("] DRY RUN: nothing will be written to the destination.", log);
                     Assert.Contains($"] [DRY RUN] Would create account \"Contoso Ltd\" ({scenario.Accounts[0].Id})", log);
@@ -300,7 +303,7 @@ namespace MyscotekDataCopier.Tests
                         Assert.True(control.IsBusy);
                         Button cancel = UiTestHost.Find<Button>(control, "cancelButton");
                         Assert.True(cancel.Enabled);
-                        foreach (string input in new[] { "entityList", "viewCombo", "includePersonalViewsCheckBox", "loadRecordsButton", "loadMoreButton",
+                        foreach (string input in new[] { "entityList", "viewCombo", "loadRecordsButton", "loadMoreButton",
                                                          "loadAllButton", "dryRunCheckBox", "preserveCreatedOnCheckBox", "bypassPluginsCheckBox",
                                                          "copyLookupsCheckBox", "copyChildrenCheckBox", "relationshipsButton", "copyButton" })
                         {
@@ -430,7 +433,7 @@ namespace MyscotekDataCopier.Tests
                     UiTestHost.PumpUntil(() => !control.IsBusy && UiTest.LogText(control).Contains("---- Summary"), "the copy");
 
                     string log = UiTest.LogText(control);
-                    Assert.Contains("copy N:1 relationships (lookups) on, copy 1:N relationships (subgrids) on; never created:", log);
+                    Assert.Contains("create related records for N:1 relationships (lookups) on, create related records for 1:N relationships (subgrids) on; never created:", log);
                     const string Followed = "] 1:N relationships followed from account (the subgrids on its active main forms): contact_customer_accounts (contact.parentcustomerid)";
                     Assert.Contains(Followed, log);
                     Assert.Contains("] Other entities reached as child records follow the relationships ticked for them in Relationships..., otherwise the subgrids on their active main forms.", log);
@@ -497,7 +500,7 @@ namespace MyscotekDataCopier.Tests
                 {
                     control.UpdateConnection(scenario.Source, null, string.Empty, null);
                     ComboBox views = UiTestHost.Find<ComboBox>(control, "viewCombo");
-                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count == 2, "the account views");
+                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count == 3, "the account views");   // two system views, then a personal view
                     views.SelectedIndex = 1;
                     Assert.Equal("Active Accounts and Primary Contacts", views.Text);   // name + pc.emailaddress1
 
@@ -743,7 +746,7 @@ namespace MyscotekDataCopier.Tests
                     UiTestHost.Find<TextBox>(control, "entityFilter").Text = "acc";
                     UiTestHost.Find<TextBox>(control, "recordFilter").Text = "contoso";
                     control.ApplyRecordFilter();
-                    foreach (string option in new[] { "includePersonalViewsCheckBox", "dryRunCheckBox", "preserveCreatedOnCheckBox",
+                    foreach (string option in new[] { "dryRunCheckBox", "preserveCreatedOnCheckBox",
                                                       "bypassPluginsCheckBox", "copyLookupsCheckBox", "copyChildrenCheckBox" })
                     {
                         CheckBox box = UiTestHost.Find<CheckBox>(control, option);
@@ -839,8 +842,9 @@ namespace MyscotekDataCopier.Tests
     /// <summary>
     /// Fake source and destination for the UI flow tests. The source has three entities (Account,
     /// Contact, User), two system views for account ("Active Accounts": name + accountnumber, then
-    /// "Active Accounts and Primary Contacts": name + pc.emailaddress1 through a link-entity), none for
-    /// the others, five accounts and one user; FetchXML is paged by the fetch's page/count. The source
+    /// "Active Accounts and Primary Contacts": name + pc.emailaddress1 through a link-entity) and one
+    /// personal view ("Accounts I Follow", listed after them), no views for the others, five accounts
+    /// and one user; FetchXML is paged by the fetch's page/count. The source
     /// answers RetrieveEntity for account and contact (recording each request and its thread), the
     /// destination for account and contact (the copy engine's metadata). For the 1:N relationships
     /// (SPEC 5.10) the source also holds an active account main form with a contact subgrid, a contact
@@ -851,6 +855,7 @@ namespace MyscotekDataCopier.Tests
     {
         private static readonly Guid ActiveAccountsViewId = new Guid("5a9e1b1c-0000-0000-0000-000000000001");
         private static readonly Guid PrimaryContactsViewId = new Guid("5a9e1b1c-0000-0000-0000-000000000002");
+        private static readonly Guid FollowedAccountsViewId = new Guid("5a9e1b1c-0000-0000-0000-000000000003");
 
         public UiScenario()
         {
@@ -963,7 +968,10 @@ namespace MyscotekDataCopier.Tests
                     object entity = views.Criteria.Conditions.First(c => c.AttributeName == "returnedtypecode").Values[0];
                     return "account".Equals(entity) ? new EntityCollection(new List<Entity> { ActiveAccountsView(), PrimaryContactsView() }) : new EntityCollection();
                 case QueryExpression personal when personal.EntityName == "userquery":
-                    return new EntityCollection();   // no personal views
+                    // One personal view for account; its name sorts before the system views, yet it is listed after them.
+                    return "account".Equals(personal.Criteria.Conditions.First(c => c.AttributeName == "returnedtypecode").Values[0])
+                        ? new EntityCollection(new List<Entity> { FollowedAccountsView() })
+                        : new EntityCollection();
                 case QueryExpression _:
                     return null;                     // systemform, child records: evaluated over the store
                 case FetchExpression fetch:
@@ -1024,6 +1032,14 @@ namespace MyscotekDataCopier.Tests
                            "<attribute name=\"emailaddress1\" /></link-entity></entity></fetch>",
             ["layoutxml"] = "<grid name=\"resultset\" jump=\"name\" select=\"1\" icon=\"1\" preview=\"1\"><row name=\"result\" id=\"accountid\">" +
                             "<cell name=\"name\" width=\"300\" /><cell name=\"pc.emailaddress1\" width=\"200\" /></row></grid>"
+        };
+
+        private static Entity FollowedAccountsView() => new Entity("userquery", FollowedAccountsViewId)
+        {
+            ["name"] = "Accounts I Follow",
+            ["fetchxml"] = "<fetch><entity name=\"account\"><attribute name=\"name\" /><order attribute=\"name\" /></entity></fetch>",
+            ["layoutxml"] = "<grid name=\"resultset\" jump=\"name\" select=\"1\" icon=\"1\" preview=\"1\"><row name=\"result\" id=\"accountid\">" +
+                            "<cell name=\"name\" width=\"300\" /></row></grid>"
         };
 
         private static OrganizationResponse AccountMetadata() => Metadata(DataverseSchemaProviderTests.AccountMetadata());

@@ -66,11 +66,11 @@ namespace MyscotekDataCopier.UI
         private FlowLayoutPanel _viewRow;
         private Label _viewLabel;
         private ComboBox _viewCombo;
-        private CheckBox _includePersonalViews;
         private Button _loadRecordsButton;
         private Button _loadMoreButton;
         private Button _loadAllButton;
         private Label _recordCountLabel;
+        private TableLayoutPanel _filterRow;
         private TextBox _recordFilter;
         private DataGridView _grid;
         private BindingSource _bindingSource;
@@ -258,10 +258,7 @@ namespace MyscotekDataCopier.UI
                 Margin = new Padding(3, 4, 3, 2)
             };
             _viewCombo.SelectedIndexChanged += OnViewChanged;
-            _toolTip.SetToolTip(_viewCombo, "System views first, then personal views (suffixed \"(personal)\").");
-
-            _includePersonalViews = NewCheckBox("includePersonalViewsCheckBox", "Include personal views");
-            _includePersonalViews.CheckedChanged += OnIncludePersonalViewsChanged;
+            _toolTip.SetToolTip(_viewCombo, "System views first, then your personal views (suffixed \"(personal)\"), each sorted by name.");
 
             _loadRecordsButton = NewButton("loadRecordsButton", "Load records", OnLoadRecordsClick);
             _toolTip.SetToolTip(_loadRecordsButton, "Clear the grid and load the first page of the selected view.");
@@ -269,20 +266,35 @@ namespace MyscotekDataCopier.UI
             _toolTip.SetToolTip(_loadMoreButton, "Append the next page of the view.");
             _loadAllButton = NewButton("loadAllButton", "Load all", OnLoadAllClick);
             _toolTip.SetToolTip(_loadAllButton, "Keep loading pages until every record of the view is loaded (Cancel stops it).");
-            _recordCountLabel = NewLabel("recordCountLabel", "0 records loaded");
 
             _viewRow = NewRow("viewRow");
-            _viewRow.Controls.AddRange(new Control[]
-            {
-                _viewLabel, _viewCombo, _includePersonalViews,
-                _loadRecordsButton, _loadMoreButton, _loadAllButton, _recordCountLabel
-            });
+            _viewRow.Controls.AddRange(new Control[] { _viewLabel, _viewCombo, _loadRecordsButton, _loadMoreButton, _loadAllButton });
 
-            // -- client-side filter --
+            // -- client-side filter and, at its right, how many records are loaded (here rather than after
+            //    the load buttons: this line never wraps, and the view row keeps one line on a narrow tool) --
             _recordFilter = new TextBox { Name = "recordFilter", Dock = DockStyle.Fill, Margin = new Padding(3, 3, 3, 3) };
             SetCueBanner(_recordFilter, "Filter loaded records...");
             _recordFilter.TextChanged += OnRecordFilterTextChanged;
             _toolTip.SetToolTip(_recordFilter, "Shows only the loaded records whose visible columns contain this text. Ticks are kept.");
+            _recordCountLabel = NewLabel("recordCountLabel", "0 records loaded");
+            _recordCountLabel.Margin = new Padding(6, 6, 3, 2);   // level with the filter's text
+
+            _filterRow = new TableLayoutPanel
+            {
+                Name = "filterRow",
+                Dock = DockStyle.Fill,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            _filterRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _filterRow.Controls.Add(_recordFilter, 0, 0);
+            _filterRow.Controls.Add(_recordCountLabel, 1, 0);
 
             // -- grid: bound to a DataTable through a BindingSource whose Filter is the record filter --
             _bindingSource = new BindingSource(_components);
@@ -336,11 +348,11 @@ namespace MyscotekDataCopier.UI
             _bypassPlugins.CheckedChanged += OnOptionChanged;
 
             // -- relationship options (SPEC 5.10) --
-            _copyLookups = NewCheckBox("copyLookupsCheckBox", "Copy N:1 relationships (lookups)");
+            _copyLookups = NewCheckBox("copyLookupsCheckBox", "Create related records for N:1 relationships (lookups)");
             _toolTip.SetToolTip(_copyLookups,
                 "Ticked: the records the copied records point at through lookups are created first, as deep as needed. " +
                 "Unticked: no lookup target is created or updated - a lookup is kept if its record exists in the destination by the end of the selected record's copy, otherwise left blank.");
-            _copyChildren = NewCheckBox("copyChildrenCheckBox", "Copy 1:N relationships (subgrids)");
+            _copyChildren = NewCheckBox("copyChildrenCheckBox", "Create related records for 1:N relationships (subgrids)");
             _toolTip.SetToolTip(_copyChildren,
                 "Also copy the child records of the selected records (the records pointing at them through the 1:N relationships chosen with Relationships...), " +
                 "and their children in turn. Child records that already exist are skipped. Default: the subgrids on each entity's main forms.");
@@ -396,7 +408,7 @@ namespace MyscotekDataCopier.UI
             _actionRow.Controls.Add(_progressLabel, 2, 0);
 
             _recordsPanel.Controls.Add(_viewRow, 0, 0);
-            _recordsPanel.Controls.Add(_recordFilter, 0, 1);
+            _recordsPanel.Controls.Add(_filterRow, 0, 1);
             _recordsPanel.Controls.Add(_grid, 0, 2);
             _recordsPanel.Controls.Add(_selectionRow, 0, 3);
             _recordsPanel.Controls.Add(_optionsRow, 0, 4);
@@ -500,12 +512,21 @@ namespace MyscotekDataCopier.UI
             }
         }
 
-        /// <summary>The view list narrows on a narrow records side so that it still fits beside its label.</summary>
+        /// <summary>
+        /// The view list narrows on a narrow records side: down to <see cref="ViewComboMinWidth"/> to keep
+        /// the load buttons on its line (one line less for the records area); where even that does not
+        /// fit, only as far as it takes to stay beside its label.
+        /// </summary>
         private void FitViewCombo(int areaWidth)
         {
             int room = areaWidth - _recordsPanel.Padding.Horizontal - _viewRow.Margin.Horizontal - _viewRow.Padding.Horizontal
                        - _viewLabel.PreferredSize.Width - _viewLabel.Margin.Horizontal - _viewCombo.Margin.Horizontal;
-            int width = Math.Max(ViewComboMinWidth, Math.Min(ViewComboWidth, room));
+            int besideButtons = room;
+            foreach (Control button in new Control[] { _loadRecordsButton, _loadMoreButton, _loadAllButton })
+                besideButtons -= button.PreferredSize.Width + button.Margin.Horizontal;
+            int width = besideButtons >= ViewComboMinWidth
+                ? Math.Min(ViewComboWidth, besideButtons)
+                : Math.Max(ViewComboMinWidth, Math.Min(ViewComboWidth, room));
             if (_viewCombo.Width != width) _viewCombo.Width = width;
         }
 
@@ -517,7 +538,7 @@ namespace MyscotekDataCopier.UI
         {
             int inner = areaWidth - _recordsPanel.Padding.Horizontal;
             int height = _recordsPanel.Padding.Vertical + _grid.Margin.Vertical + MinimumGridHeight;
-            foreach (Control row in new Control[] { _viewRow, _recordFilter, _selectionRow, _optionsRow, _actionRow })
+            foreach (Control row in new Control[] { _viewRow, _filterRow, _selectionRow, _optionsRow, _actionRow })
             {
                 height += row.GetPreferredSize(new Size(Math.Max(1, inner - row.Margin.Horizontal), 0)).Height + row.Margin.Vertical;
             }

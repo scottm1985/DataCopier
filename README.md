@@ -47,18 +47,19 @@ every other assembly it uses.
    destination looks like the same organisation as the source, you are asked to confirm before
    anything is copied.
 3. **Pick an entity and a view.** Select an entity: its system views are listed in **View**, then
-   your personal views (suffixed `(personal)`) while **Include personal views** is ticked. An entity
-   without views gets an `(All records)` view.
+   your personal views (suffixed `(personal)`), each sorted by name. An entity without views gets an
+   `(All records)` view.
 4. **Load the records.** **Load records** loads the first page of the view (500 records by default),
-   **Load more** the next page, **Load all** every page until done or until you press **Cancel**.
+   **Load more** the next page, **Load all** every page until done or until you press **Cancel**;
+   the count at the right of the filter box says how many are loaded and whether there are more.
    The columns are headed with their display names (a column of a related entity reads e.g.
    `Email (Primary Contact)`); hover over a header to see its logical name.
 5. **Tick the records to copy** in the **Copy** column (click the box, or press Space on a row).
    **Filter loaded records...** narrows the grid on any visible column and keeps the ticks.
    **Select all** / **Select none** act on the rows the filter shows; `Selected: N` counts every
    ticked record and says how many the filter hides.
-6. **Choose the options** (below). With **Copy 1:N relationships (subgrids)** ticked, use
-   **Relationships...** to see and change which child records come along.
+6. **Choose the options** (below). With **Create related records for 1:N relationships (subgrids)**
+   ticked, use **Relationships...** to see and change which child records come along.
 7. **Copy.** Click **Copy selected records**. The progress shows next to **Cancel**
    (`3 / 25 - created 41, failed 1`) and every step appears in the log. **Cancel** stops the copy
    before the next record; the summary of what was done is still logged.
@@ -72,8 +73,8 @@ While something runs, the inputs are disabled and **Cancel** is enabled; XrmTool
 | **Dry run (write nothing)** | Resolves everything and logs what would happen (`[DRY RUN] Would create ...`) without writing anything. The source and the destination are still read. |
 | **Preserve created on (overriddencreatedon)** | On create, the source `createdon` date is written to `overriddencreatedon`. If the destination refuses it (a missing privilege), the record is created without it and a warning is logged. |
 | **Bypass custom plugins (online only)** | Sends `BypassCustomPluginExecution` with every create, update and close message so custom plugins do not run. Dataverse online only, and the user needs the `prvBypassCustomPlugins` privilege. |
-| **Copy N:1 relationships (lookups)** | Ticked (the default): the records the copied records point at are created first, recursively. Unticked: no lookup target is created or updated; a lookup is kept only if its record exists in the destination by the end of the selected record's copy (see [Lookups not copied](#lookups-not-copied)). |
-| **Copy 1:N relationships (subgrids)** | Unticked by default. Ticked: the child records of the selected records are copied too, recursively (see [Child records](#child-records)). **Relationships...** chooses the relationships. |
+| **Create related records for N:1 relationships (lookups)** | Ticked (the default): the records the copied records point at are created first, recursively. Unticked: no lookup target is created or updated; a lookup is kept only if its record exists in the destination by the end of the selected record's copy (see [Lookups not copied](#lookups-not-copied)). |
+| **Create related records for 1:N relationships (subgrids)** | Unticked by default. Ticked: the child records of the selected records are copied too, recursively (see [Child records](#child-records)). **Relationships...** chooses the relationships. |
 
 The options are remembered between sessions. With both relationship options unticked, only the
 selected records are written.
@@ -105,7 +106,7 @@ large organisation the first time.
 
 ### Related records (lookups)
 
-While **Copy N:1 relationships (lookups)** is ticked:
+While **Create related records for N:1 relationships (lookups)** is ticked:
 
 - Lookup, Customer, Owner and Regarding columns and activity party lists are followed, recursively.
   Many-to-many associations are **not** copied.
@@ -120,7 +121,7 @@ While **Copy N:1 relationships (lookups)** is ticked:
 
 ### Child records
 
-While **Copy 1:N relationships (subgrids)** is ticked:
+While **Create related records for 1:N relationships (subgrids)** is ticked:
 
 - After a selected record is created or updated - or found already there - the records that point at
   it through the chosen 1:N relationships are copied too, then THEIR child records, as deep as it goes.
@@ -136,7 +137,7 @@ While **Copy 1:N relationships (subgrids)** is ticked:
 
 ### Lookups not copied
 
-While **Copy N:1 relationships (lookups)** is unticked:
+While **Create related records for N:1 relationships (lookups)** is unticked:
 
 - No record is created or updated because a lookup points at it. A lookup is kept if the record it
   points at exists in the destination by the end of the selected record's copy (it was there already,
@@ -211,10 +212,9 @@ file only while XrmToolBox is closed.
 | Setting | Default | Meaning |
 |---|---|---|
 | `DryRun`, `PreserveCreatedOn`, `BypassCustomPlugins` | false | The option check boxes. |
-| `CopyLookups` | true | **Copy N:1 relationships (lookups)**. |
-| `CopyChildren` | false | **Copy 1:N relationships (subgrids)**. |
+| `CopyLookups` | true | **Create related records for N:1 relationships (lookups)**. |
+| `CopyChildren` | false | **Create related records for 1:N relationships (subgrids)**. |
 | `RelationshipSelections` | (empty) | The relationships chosen in **Relationships...**, per source organisation and entity. |
-| `IncludePersonalViews` | true | List personal views after the system views. |
 | `PageSize` | 500 | Records per page when loading (1 - 5000). |
 | `NeverCreateEntities` | `systemuser,team,businessunit,organization,transactioncurrency` | Comma-separated logical names; blank restores the default. |
 | `LastEntity` | | The entity selected again when the entity list loads. |

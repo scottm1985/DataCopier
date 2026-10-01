@@ -38,19 +38,19 @@ namespace MyscotekDataCopier.Core
         public int MaxDepth { get; set; } = 100;
 
         /// <summary>
-        /// "Copy N:1 relationships (lookups)" (SPEC 5.10). True (default): the records the copied
-        /// records point at through lookups are created first, recursively. False: no lookup target is
-        /// ever created or updated - a lookup is kept if its target exists in the destination by the end
-        /// of the selected record's copy (one the copy brings along later, e.g. as a child record, is
-        /// filled in with an update) and left blank otherwise. Never-create entities and virtual tables
-        /// behave the same either way.
+        /// "Create related records for N:1 relationships (lookups)" (SPEC 5.10). True (default): the
+        /// records the copied records point at through lookups are created first, recursively. False: no
+        /// lookup target is ever created or updated - a lookup is kept if its target exists in the
+        /// destination by the end of the selected record's copy (one the copy brings along later, e.g. as
+        /// a child record, is filled in with an update) and left blank otherwise. Never-create entities
+        /// and virtual tables behave the same either way.
         /// </summary>
         public bool CopyLookups { get; set; } = true;
 
         /// <summary>
-        /// "Copy 1:N relationships (subgrids)" (SPEC 5.10). When true, the child records of every
-        /// selected record - and, recursively, of those children - are copied too, through the
-        /// relationships <see cref="ChildRelationshipSelector"/> chooses. Default false.
+        /// "Create related records for 1:N relationships (subgrids)" (SPEC 5.10). When true, the child
+        /// records of every selected record - and, recursively, of those children - are copied too,
+        /// through the relationships <see cref="ChildRelationshipSelector"/> chooses. Default false.
         /// </summary>
         public bool CopyChildren { get; set; }
 

@@ -15,9 +15,9 @@ using static MyscotekDataCopier.Tests.Fakes.TestData;
 namespace MyscotekDataCopier.Tests
 {
     /// <summary>
-    /// SPEC 5.10: the relationship options - "Copy 1:N relationships (subgrids)" (child records,
-    /// recursively, only downward from the selected records) and "Copy N:1 relationships (lookups)"
-    /// switched off (lookups kept only when their target already exists).
+    /// SPEC 5.10: the relationship options - "Create related records for 1:N relationships (subgrids)"
+    /// (child records, recursively, only downward from the selected records) and "Create related records
+    /// for N:1 relationships (lookups)" switched off (lookups kept only when their target already exists).
     /// </summary>
     public class CopyEngineChildRecordTests
     {

@@ -13,7 +13,8 @@ namespace MyscotekDataCopier.UI
     /// public read/write properties (XmlSerializer). Saved when the tool closes, whenever an option
     /// checkbox changes and when the relationship picker is confirmed; <see cref="NeverCreateEntities"/>
     /// and <see cref="PageSize"/> are only edited in that file (close XrmToolBox first: the tool
-    /// rewrites the file when it closes).
+    /// rewrites the file when it closes). Elements that no longer exist are ignored when the file is
+    /// read, such as IncludePersonalViews before 1.2026.10.2 (personal views are now always listed).
     /// </summary>
     public class DataCopierSettings
     {
@@ -25,12 +26,11 @@ namespace MyscotekDataCopier.UI
         public bool DryRun { get; set; }
         public bool PreserveCreatedOn { get; set; }
         public bool BypassCustomPlugins { get; set; }
-        public bool IncludePersonalViews { get; set; } = true;
 
-        /// <summary>"Copy N:1 relationships (lookups)" (SPEC 5.10): the lookup targets are created first. Default on.</summary>
+        /// <summary>"Create related records for N:1 relationships (lookups)" (SPEC 5.10): the lookup targets are created first. Default on.</summary>
         public bool CopyLookups { get; set; } = true;
 
-        /// <summary>"Copy 1:N relationships (subgrids)" (SPEC 5.10): the child records are copied too. Default off.</summary>
+        /// <summary>"Create related records for 1:N relationships (subgrids)" (SPEC 5.10): the child records are copied too. Default off.</summary>
         public bool CopyChildren { get; set; }
 
         /// <summary>Records per page for Load records / Load more / Load all.</summary>

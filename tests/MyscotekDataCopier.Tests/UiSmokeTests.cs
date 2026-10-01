@@ -60,12 +60,16 @@ namespace MyscotekDataCopier.Tests
                     ComboBox views = UiTestHost.Find<ComboBox>(control, "viewCombo");
                     Assert.Equal(ComboBoxStyle.DropDownList, views.DropDownStyle);
                     Assert.Empty(views.Items);
-                    Assert.True(UiTestHost.Find<CheckBox>(control, "includePersonalViewsCheckBox").Checked);
+                    // No personal views option: the personal views are always listed, after the system views.
+                    Assert.Equal(new[] { "viewLabel", "viewCombo", "loadRecordsButton", "loadMoreButton", "loadAllButton" },
+                        UiTestHost.Find<FlowLayoutPanel>(control, "viewRow").Controls.Cast<Control>().Select(c => c.Name));
+                    Assert.DoesNotContain(UiTestHost.Descendants(control), c => c is CheckBox && c.Text.IndexOf("personal", StringComparison.OrdinalIgnoreCase) >= 0);
                     Assert.False(UiTestHost.Find<Button>(control, "loadRecordsButton").Enabled);
                     Assert.False(UiTestHost.Find<Button>(control, "loadMoreButton").Enabled);
                     Assert.False(UiTestHost.Find<Button>(control, "loadAllButton").Enabled);
                     Assert.Equal("0 records loaded", UiTestHost.Find<Label>(control, "recordCountLabel").Text);
-                    Assert.NotNull(UiTestHost.Find<TextBox>(control, "recordFilter"));
+                    Assert.Equal(new[] { "recordFilter", "recordCountLabel" },   // the loaded count at the right of the filter
+                        UiTestHost.Find<TableLayoutPanel>(control, "filterRow").Controls.Cast<Control>().Select(c => c.Name));
 
                     // grid: Copy tick box, hidden id, read-only apart from the tick box, no new-row line
                     DataGridView grid = UiTestHost.Find<DataGridView>(control, "recordGrid");
@@ -99,8 +103,8 @@ namespace MyscotekDataCopier.Tests
                     CheckBox copyLookups = UiTestHost.Find<CheckBox>(control, "copyLookupsCheckBox");
                     CheckBox copyChildren = UiTestHost.Find<CheckBox>(control, "copyChildrenCheckBox");
                     Button relationships = UiTestHost.Find<Button>(control, "relationshipsButton");
-                    Assert.Equal("Copy N:1 relationships (lookups)", copyLookups.Text);
-                    Assert.Equal("Copy 1:N relationships (subgrids)", copyChildren.Text);
+                    Assert.Equal("Create related records for N:1 relationships (lookups)", copyLookups.Text);
+                    Assert.Equal("Create related records for 1:N relationships (subgrids)", copyChildren.Text);
                     Assert.Equal("Relationships...", relationships.Text);
                     Assert.True(copyLookups.Enabled && copyLookups.Checked);
                     Assert.True(copyChildren.Enabled);
@@ -147,7 +151,7 @@ namespace MyscotekDataCopier.Tests
             {
                 var settings = new DataCopierSettings
                 {
-                    DryRun = true, PreserveCreatedOn = false, BypassCustomPlugins = true, IncludePersonalViews = false, CopyLookups = false, CopyChildren = true
+                    DryRun = true, PreserveCreatedOn = false, BypassCustomPlugins = true, CopyLookups = false, CopyChildren = true
                 };
                 var saved = new List<(bool DryRun, bool Preserve, bool Bypass, bool Lookups, bool Children)>();
                 using (DataCopierControl control = UiTest.NewControl(settings,
@@ -156,7 +160,6 @@ namespace MyscotekDataCopier.Tests
                     Assert.True(UiTestHost.Find<CheckBox>(control, "dryRunCheckBox").Checked);
                     Assert.False(UiTestHost.Find<CheckBox>(control, "preserveCreatedOnCheckBox").Checked);
                     Assert.True(UiTestHost.Find<CheckBox>(control, "bypassPluginsCheckBox").Checked);
-                    Assert.False(UiTestHost.Find<CheckBox>(control, "includePersonalViewsCheckBox").Checked);
                     Assert.False(UiTestHost.Find<CheckBox>(control, "copyLookupsCheckBox").Checked);
                     Assert.True(UiTestHost.Find<CheckBox>(control, "copyChildrenCheckBox").Checked);
                     Assert.Empty(saved);   // applying the settings does not write them back
@@ -186,7 +189,7 @@ namespace MyscotekDataCopier.Tests
 
                     Assert.NotNull(control.Settings);
                     Assert.Equal(DataCopierSettings.DefaultPageSize, control.Settings.EffectivePageSize);
-                    Assert.True(UiTestHost.Find<CheckBox>(control, "includePersonalViewsCheckBox").Checked);
+                    Assert.True(UiTestHost.Find<CheckBox>(control, "copyLookupsCheckBox").Checked);   // the defaults
                     RichTextBox log = UiTestHost.Find<RichTextBox>(control, "logBox");
                     UiTestHost.PumpUntil(() => log.Text.Contains("Settings could not be loaded, the defaults are used: settings store unavailable"), "the settings warning");
                     Assert.Empty(dialogs.Messages);
@@ -200,7 +203,6 @@ namespace MyscotekDataCopier.Tests
             var settings = new DataCopierSettings();
 
             Assert.False(settings.DryRun || settings.PreserveCreatedOn || settings.BypassCustomPlugins);
-            Assert.True(settings.IncludePersonalViews);
             Assert.True(settings.CopyLookups);
             Assert.False(settings.CopyChildren);
             Assert.Empty(settings.RelationshipSelections);
@@ -240,6 +242,7 @@ namespace MyscotekDataCopier.Tests
 
             Assert.Contains("<CopyLookups>false</CopyLookups>", xml);
             Assert.Contains("<CopyChildren>true</CopyChildren>", xml);
+            Assert.DoesNotContain("IncludePersonalViews", xml);   // gone in 1.2026.10.2: personal views are always listed
             Assert.Contains("<Relationship>Account_Tasks</Relationship>", xml);
             Assert.False(loaded.CopyLookups);
             Assert.True(loaded.CopyChildren);
@@ -251,13 +254,16 @@ namespace MyscotekDataCopier.Tests
             Assert.Equal(new[] { "Account_Emails" }, loaded.GetRelationshipSelections("https://test.crm4.dynamics.com/")["account"]);
             Assert.Empty(loaded.GetRelationshipSelections("https://prod.crm4.dynamics.com"));
 
-            // An old settings file without the new elements keeps the defaults.
+            // An old settings file without the new elements keeps the defaults, and an element that no
+            // longer exists (IncludePersonalViews, before 1.2026.10.2) is skipped without an error.
             DataCopierSettings old;
-            using (var reader = new StringReader("<?xml version=\"1.0\"?><DataCopierSettings><DryRun>true</DryRun></DataCopierSettings>"))
+            using (var reader = new StringReader("<?xml version=\"1.0\"?><DataCopierSettings><DryRun>true</DryRun>" +
+                                                 "<IncludePersonalViews>false</IncludePersonalViews><PageSize>250</PageSize></DataCopierSettings>"))
             {
                 old = (DataCopierSettings)serializer.Deserialize(reader);
             }
             Assert.True(old.DryRun && old.CopyLookups && !old.CopyChildren);
+            Assert.Equal(250, old.PageSize);   // read after the unknown element
             Assert.Empty(old.RelationshipSelections);
         }
 

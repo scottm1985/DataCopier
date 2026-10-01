@@ -377,7 +377,6 @@ namespace MyscotekDataCopier.UI
                 _bypassPlugins.Checked = _settings.BypassCustomPlugins;
                 _copyLookups.Checked = _settings.CopyLookups;
                 _copyChildren.Checked = _settings.CopyChildren;
-                _includePersonalViews.Checked = _settings.IncludePersonalViews;
             }
             finally
             {
@@ -395,22 +394,6 @@ namespace MyscotekDataCopier.UI
             _settings.CopyChildren = _copyChildren.Checked;
             SaveSettings();
             UpdateControlStates();   // Relationships... follows the 1:N option
-        }
-
-        private void OnIncludePersonalViewsChanged(object sender, EventArgs e)
-        {
-            if (_applyingSettings) return;
-            _settings.IncludePersonalViews = _includePersonalViews.Checked;
-            SaveSettings();
-            // Only a setting while no entity is selected (no connection needed); otherwise its views are read again.
-            if (_currentEntity != null && !IsBusy) RequestSource("Loading views", ReloadViews);
-        }
-
-        /// <summary>Reads the current entity's views again, keeping the loaded records. Runs through <see cref="RequestSource"/>.</summary>
-        private void ReloadViews()
-        {
-            EntityInfo entity = _currentEntity;
-            if (entity != null && !IsBusy) RunGuarded("Loading views", () => LoadViewsAsync(entity, resetRecords: false));
         }
 
         private CopyOptions BuildOptions()
@@ -632,7 +615,6 @@ namespace MyscotekDataCopier.UI
             _refreshEntitiesButton.Enabled = !busy;
             _entityList.Enabled = !busy;
             _viewCombo.Enabled = !busy && _viewCombo.Items.Count > 0;
-            _includePersonalViews.Enabled = !busy;
             _loadRecordsButton.Enabled = !busy && connected && _currentEntity != null && selectedView != null;
             _loadMoreButton.Enabled = !busy && connected && selectedIsLoaded && _moreRecords;
             _loadAllButton.Enabled = !busy && connected && _currentEntity != null && selectedView != null && (!selectedIsLoaded || _moreRecords);
@@ -752,7 +734,7 @@ namespace MyscotekDataCopier.UI
             {
                 _suppressEntitySelection = false;
             }
-            RunGuarded("Loading views", () => LoadViewsAsync(entity, resetRecords: true));
+            RunGuarded("Loading views", () => LoadViewsAsync(entity));
         }
 
         private void OnEntityFilterChanged(object sender, EventArgs e) => Guard("Filtering entities", PopulateEntityList);
@@ -807,7 +789,7 @@ namespace MyscotekDataCopier.UI
             if (_suppressEntitySelection || IsBusy) return;
             if (_entityList.SelectedItems.Count != 1 || !(_entityList.SelectedItems[0].Tag is EntityInfo entity)) return;
             if (_currentEntity != null && string.Equals(_currentEntity.LogicalName, entity.LogicalName, StringComparison.OrdinalIgnoreCase)) return;
-            RunGuarded("Loading views", () => LoadViewsAsync(entity, resetRecords: true));
+            RunGuarded("Loading views", () => LoadViewsAsync(entity));
         }
 
         /// <summary>Clears the entity selection so that clicking the entity again retries.</summary>
@@ -841,43 +823,37 @@ namespace MyscotekDataCopier.UI
         // =====================================================================================
 
         /// <summary>
-        /// Loads the entity's system views (then personal ones when asked). With
-        /// <paramref name="resetRecords"/> the entity becomes current and the grid is cleared;
-        /// without it (personal views toggled) the loaded records and the selected view are kept.
+        /// Makes the entity current (the grid is cleared) and loads its views: the system views, then
+        /// the personal views - always both, each sorted by name.
         /// </summary>
-        private async Task LoadViewsAsync(EntityInfo entity, bool resetRecords)
+        private async Task LoadViewsAsync(EntityInfo entity)
         {
             IOrganizationService service = Service;
             if (IsBusy || service == null || entity == null) return;
 
             int generation = _generation;
-            ViewInfo keep = resetRecords ? null : _viewCombo.SelectedItem as ViewInfo;
-            if (resetRecords)
-            {
-                _currentEntity = entity;
-                _settings.LastEntity = entity.LogicalName;
-                SaveSettings();
-                ClearViews();
-                ClearRecords();
-                if (NeverCreateSet().Contains(entity.LogicalName))
-                    _logger.Write(LogLevel.Warning, $"{entity.LogicalName} is in the never-create list: its records can be listed but not copied.");
-                else if (entity.IsVirtual)
-                    _logger.Write(LogLevel.Warning, $"{entity.LogicalName} is a virtual table: its records can be listed but not copied.");
-            }
+            _currentEntity = entity;
+            _settings.LastEntity = entity.LogicalName;
+            SaveSettings();
+            ClearViews();
+            ClearRecords();
+            if (NeverCreateSet().Contains(entity.LogicalName))
+                _logger.Write(LogLevel.Warning, $"{entity.LogicalName} is in the never-create list: its records can be listed but not copied.");
+            else if (entity.IsVirtual)
+                _logger.Write(LogLevel.Warning, $"{entity.LogicalName} is a virtual table: its records can be listed but not copied.");
 
-            bool includePersonal = _includePersonalViews.Checked;
             CancellationToken token = BeginOperation($"Loading the views of {entity.LogicalName}...");
             IList<ViewInfo> views;
             bool loaded = false;
             try
             {
-                views = await Task.Run(() => ViewService.GetViews(service, entity.LogicalName, includePersonal, _logger));
+                views = await Task.Run(() => ViewService.GetViews(service, entity.LogicalName, includePersonal: true, _logger));
                 loaded = !token.IsCancellationRequested;
             }
             finally
             {
                 EndOperation();
-                if (!loaded && resetRecords && generation == _generation && !IsDisposed && ReferenceEquals(_currentEntity, entity))
+                if (!loaded && generation == _generation && !IsDisposed && ReferenceEquals(_currentEntity, entity))
                     ForgetEntity();
             }
 
@@ -890,26 +866,24 @@ namespace MyscotekDataCopier.UI
                 views = new List<ViewInfo> { ViewService.CreateAllRecordsView(entity.LogicalName, entity.PrimaryIdAttribute, entity.PrimaryNameAttribute) };
                 _logger.Write(LogLevel.Info, $"{entity.LogicalName} has no usable views: {ViewService.AllRecordsViewName} is used.");
             }
-            PopulateViews(views, keep);
+            PopulateViews(views);
             UpdateControlStates();
         }
 
-        private void PopulateViews(IList<ViewInfo> views, ViewInfo keep)
+        private void PopulateViews(IList<ViewInfo> views)
         {
             _viewCombo.BeginUpdate();
             try
             {
                 _viewCombo.Items.Clear();
-                int selected = 0;
                 int widest = _viewCombo.Width;
                 for (int i = 0; i < views.Count; i++)
                 {
                     _viewCombo.Items.Add(views[i]);
-                    if (keep != null && SameView(views[i], keep)) selected = i;
                     widest = Math.Max(widest, TextRenderer.MeasureText(views[i].DisplayName ?? string.Empty, _viewCombo.Font).Width + SystemInformation.VerticalScrollBarWidth + 8);
                 }
                 _viewCombo.DropDownWidth = Math.Min(widest, 700);
-                _viewCombo.SelectedIndex = views.Count > 0 ? selected : -1;
+                _viewCombo.SelectedIndex = views.Count > 0 ? 0 : -1;
             }
             finally
             {
@@ -921,7 +895,7 @@ namespace MyscotekDataCopier.UI
 
         private void OnViewChanged(object sender, EventArgs e) => UpdateControlStates();
 
-        /// <summary>Same saved view (views are re-read when personal views are toggled, so compare ids, not instances).</summary>
+        /// <summary>Same saved view: the same id and kind (and name, for the synthesised view), not necessarily the same instance.</summary>
         private static bool SameView(ViewInfo a, ViewInfo b)
         {
             if (a == null || b == null) return false;
@@ -1506,7 +1480,8 @@ namespace MyscotekDataCopier.UI
             WriteRunLine(LogLevel.Info,
                 $"Options: dry run {OnOff(options.DryRun)}, preserve created on {OnOff(options.PreserveCreatedOn)}, " +
                 $"bypass custom plugins {OnOff(options.BypassCustomPluginExecution)}, " +
-                $"copy N:1 relationships (lookups) {OnOff(options.CopyLookups)}, copy 1:N relationships (subgrids) {OnOff(options.CopyChildren)}; " +
+                $"create related records for N:1 relationships (lookups) {OnOff(options.CopyLookups)}, " +
+                $"create related records for 1:N relationships (subgrids) {OnOff(options.CopyChildren)}; " +
                 $"never created: {NeverCreateList(options)}");
 
             int run = ++_copyRun;

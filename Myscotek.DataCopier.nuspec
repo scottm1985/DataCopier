@@ -5,7 +5,7 @@
          src\MyscotekDataCopier\Properties\AssemblyInfo.cs, or the Tool Library offers an update
          forever: build-package.ps1 refuses to pack when they differ. -->
     <id>Myscotek.DataCopier</id>
-    <version>1.2026.10.1</version>
+    <version>1.2026.10.2</version>
     <title>Data Copier</title>
     <authors>Myscotek</authors>
     <owners>Myscotek</owners>
@@ -28,6 +28,8 @@
       written to a colour-coded log.
     </description>
     <releaseNotes>
+      1.2026.10.2 - Personal views always listed under system views; relationship options relabelled.
+
       1.2026.10.1 - first public release.
       - Copy the ticked records of any view with the same GUIDs; a selected record that exists is updated.
       - Copy N:1 relationships (lookups): the records they point at are created first, recursively; an existing

@@ -60,6 +60,14 @@ namespace MyscotekDataCopier.Tests
                     SizeTo(control, new Size(1600, 900));
                     Assert.Equal(280, main.SplitterDistance);
                     AssertFills(control, scroll: false);
+
+                    // Ticks hidden by the filter give the longest "Selected" text: the small size still fits.
+                    UiTestHost.Find<Button>(control, "selectAllButton").PerformClick();
+                    UiTestHost.Find<TextBox>(control, "recordFilter").Text = "fabrikam";
+                    control.ApplyRecordFilter();
+                    SizeTo(control, new Size(800, 500));
+                    Assert.Equal("Selected: 3 (2 hidden by the filter)", UiTestHost.Find<Label>(control, "selectedLabel").Text);
+                    AssertFills(control, scroll: false);
                     Assert.Empty(scenario.Dialogs.Messages);
                 }
             });
@@ -110,7 +118,7 @@ namespace MyscotekDataCopier.Tests
             DataGridView grid = UiTestHost.Find<DataGridView>(control, "recordGrid");
             var rows = new Control[]
             {
-                UiTestHost.Find<FlowLayoutPanel>(control, "viewRow"), UiTestHost.Find<TextBox>(control, "recordFilter"), grid,
+                UiTestHost.Find<FlowLayoutPanel>(control, "viewRow"), UiTestHost.Find<TableLayoutPanel>(control, "filterRow"), grid,
                 UiTestHost.Find<FlowLayoutPanel>(control, "selectionRow"), UiTestHost.Find<FlowLayoutPanel>(control, "optionsRow"),
                 UiTestHost.Find<TableLayoutPanel>(control, "actionRow")
             };
