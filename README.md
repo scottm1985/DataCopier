@@ -197,6 +197,16 @@ never-created entities: never read from the source, never created or updated, an
 kept only if the same row exists in the destination. That is checked by id, because some providers
 fail every query but still return a single row.
 
+### Connections
+
+Dataverse keeps every connection as a pair: the one you create, and a mirror the platform adds with
+the two records (and roles) swapped. The destination adds its own mirror to every connection the tool
+creates, so mirrors are never copied: when the copy meets one (as a child record, a selected record,
+a lookup target...), it logs `Skipped connection ...: mirror of ...` and copies the
+original connection in its place (as a selected record if the mirror was selected, so it is updated
+when it exists). The destination ends up with one pair, also after a re-run. A lookup that points at
+a mirror is left blank: the destination's mirror has another GUID.
+
 ### Lookups that cannot be checked
 
 If the destination cannot say whether a user, team, currency or virtual-table row exists (the
@@ -234,14 +244,22 @@ related records, the 1:N and N:N relationships followed), then each record with 
 (indented by depth) and the outcome (`Created`, `Updated`, `Exists, skipped`, `FAILED`), every lookup
 blanked, kept unverified or backfilled, every association, every column skipped and every state
 change. It ends with a summary: created, updated, skipped, failed, lookups blanked and backfilled,
-child records found, the peer records found and the associations created, skipped and failed (when
-there are any), state changes, elapsed time and one line per error.
+child records found, the peer records found, the associations created, skipped and failed and the
+connection mirrors skipped (when there are any), state changes, elapsed time and one line per error.
 
 **Copy log** copies it to the clipboard, **Save log...** writes a text file, **Clear** empties it. The
 window keeps the last 20,000 lines. Errors, and each copy's header and summary, also go to XrmToolBox's
 own log (`%AppData%\MscrmTools\XrmToolBox\Logs\MyscotekDataCopier.log`).
 
 ## Settings
+
+**Settings...** (after **Bypass custom plugins** in the options) edits the two settings that have no
+check box. **Tables that are never created** takes one logical name per line (see
+[Never-created entities](#never-created-entities)); the entity list marks them `(never created)`,
+**Reset to defaults** puts the five defaults back, and a name you add that is not a table in the source
+is kept only if you confirm it. **Page size** (50 - 5000) is how many records **Load records**, **Load
+more** and **Load all** read at a time; it applies from the next **Load records**. **OK** saves both
+at once: take `team` off the list, for example, and the selected teams can be copied straight away.
 
 Stored by XrmToolBox in `%AppData%\MscrmTools\XrmToolBox\Settings\MyscotekDataCopier.xml`; edit the
 file only while XrmToolBox is closed.

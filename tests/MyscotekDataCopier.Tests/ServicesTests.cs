@@ -350,5 +350,14 @@ namespace MyscotekDataCopier.Tests
             Assert.Equal(CopyOptions.DefaultNeverCreateEntities.OrderBy(n => n, StringComparer.Ordinal),
                 options.NeverCreateEntities.OrderBy(n => n, StringComparer.Ordinal));
         }
+
+        [Fact]
+        public void ParseNeverCreateEntities_keeps_the_order_drops_blanks_and_duplicates_and_an_empty_list_is_the_defaults()
+        {
+            // One name per line (the settings dialog) or the settings format: the same reading.
+            Assert.Equal(new[] { "team", "systemuser", "queue" }, CopyOptions.ParseNeverCreateEntities(" Team\r\n\r\nsystemuser, TEAM ;queue\n"));
+            Assert.Same(CopyOptions.DefaultNeverCreateEntities, CopyOptions.ParseNeverCreateEntities(" \r\n "));
+            Assert.Same(CopyOptions.DefaultNeverCreateEntities, CopyOptions.ParseNeverCreateEntities(null));
+        }
     }
 }

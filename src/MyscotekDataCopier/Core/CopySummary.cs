@@ -14,6 +14,7 @@ namespace MyscotekDataCopier.Core
         public int ChildRecordsFound;                                  // child records listed through 1:N relationships (SPEC 5.10)
         public int PeerRecordsFound;                                   // associated records (peers) listed through N:N relationships (SPEC 5.10)
         public int AssociationsCreated, AssociationsSkipped, AssociationsFailed;   // N:N associations (SPEC 5.10)
+        public int ConnectionMirrorsSkipped;                           // connection mirrors met and never written: their master is copied instead (SPEC 5.5)
         public bool Cancelled, DryRun;
         public TimeSpan Elapsed;
         public IReadOnlyList<string> Errors = Array.Empty<string>();   // one line per failure, for the summary block

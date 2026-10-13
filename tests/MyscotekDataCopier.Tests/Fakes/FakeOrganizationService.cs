@@ -23,7 +23,11 @@ namespace MyscotekDataCopier.Tests.Fakes
     /// the intersect queries of N:N relationships: an association is a row of the intersect entity
     /// (seeded with <see cref="AddAssociation"/>), and an AssociateRequest over a relationship declared
     /// with <see cref="ManyToMany"/> adds one (both records must exist; a pair that is there already
-    /// fails with "Cannot insert duplicate key.", like the platform).
+    /// fails with "Cannot insert duplicate key.", like the platform). Like the platform too, a created
+    /// connection becomes a master (ismaster true) with a mirror stored next to it (SPEC 5.5): a new id,
+    /// record1/record2 and their roles swapped, ismaster false, the two cross-linked through
+    /// relatedconnectionid (<see cref="Records"/> lists both). Seeded records (<see cref="Add"/>) are
+    /// stored as they are.
     /// </summary>
     public sealed class FakeOrganizationService : IOrganizationService
     {
@@ -129,6 +133,10 @@ namespace MyscotekDataCopier.Tests.Fakes
 
         public bool Contains(string entity, Guid id) => _store.ContainsKey(Key(entity, id));
 
+        /// <summary>The stored records of an entity (e.g. every connection row, the platform-made mirrors included).</summary>
+        public IReadOnlyList<Entity> Records(string entity) =>
+            _store.Values.Where(e => SameEntity(e.LogicalName, entity)).ToList();
+
         public IReadOnlyList<CreateRequest> Creates => Executed.OfType<CreateRequest>().ToList();
 
         public IReadOnlyList<UpdateRequest> Updates => Executed.OfType<UpdateRequest>().ToList();
@@ -224,10 +232,34 @@ namespace MyscotekDataCopier.Tests.Fakes
             Entity stored = Clone(target);
             stored.Id = id;
             _store[Key(target.LogicalName, id)] = stored;
+            if (SameEntity(target.LogicalName, "connection")) CreateConnectionMirror(stored);
 
             var response = new CreateResponse();
             response.Results["id"] = id;
             return response;
+        }
+
+        /// <summary>
+        /// What the platform does when a connection is created: the record is the master (ismaster true) and a
+        /// mirror is created with it - a new id, the same values with record1/record2 and their roles swapped,
+        /// ismaster false - the two cross-linked through relatedconnectionid.
+        /// </summary>
+        private void CreateConnectionMirror(Entity master)
+        {
+            var mirror = new Entity("connection", Guid.NewGuid());
+            foreach (KeyValuePair<string, object> pair in master.Attributes) mirror[pair.Key] = pair.Value;
+            foreach ((string one, string two) in new[] { ("record1id", "record2id"), ("record1roleid", "record2roleid") })
+            {
+                mirror.Attributes.Remove(one);
+                mirror.Attributes.Remove(two);
+                if (master.Attributes.TryGetValue(two, out object second)) mirror[one] = second;
+                if (master.Attributes.TryGetValue(one, out object first)) mirror[two] = first;
+            }
+            master["ismaster"] = true;
+            mirror["ismaster"] = false;
+            master["relatedconnectionid"] = new EntityReference("connection", mirror.Id);
+            mirror["relatedconnectionid"] = new EntityReference("connection", master.Id);
+            _store[Key("connection", mirror.Id)] = mirror;
         }
 
         private OrganizationResponse DoUpdate(Entity target)

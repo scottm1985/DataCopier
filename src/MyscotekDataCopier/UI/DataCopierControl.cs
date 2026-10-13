@@ -27,6 +27,7 @@ namespace MyscotekDataCopier.UI
     /// organisation (<see cref="DestinationActionName"/>). Pick an entity and
     /// a view, load and tick records, choose the relationship options (SPEC 5.10; the 1:N and N:N
     /// relationships in <see cref="RelationshipPickerForm"/>), then copy them with <see cref="CopyEngine"/>.
+    /// Settings... (<see cref="CopierSettingsForm"/>) edits the never-create tables and the page size.
     /// Long operations run with Task.Run + async/await (not WorkAsync) so the log stays visible and live
     /// while they run; one operation at a time, and Cancel stops it. Every action that needs the
     /// source asks XrmToolBox for it when there is none (<see cref="RequestSource"/>). Control
@@ -68,6 +69,9 @@ namespace MyscotekDataCopier.UI
         /// <summary>Suffix of a virtual table's logical name in the entity list.</summary>
         internal const string VirtualMarker = " (virtual)";
 
+        /// <summary>Suffix of the logical name of a table in the never-create list, in the entity list.</summary>
+        internal const string NeverCreateMarker = " (never created)";
+
         private readonly IContainer _components = new Container();
         private readonly Action<DataCopierSettings> _saveSettings;
         private readonly bool _mirrorToXrmToolBoxLog;
@@ -102,6 +106,13 @@ namespace MyscotekDataCopier.UI
         private int _rowsWithoutId;
         private int _selectedCount;
 
+        /// <summary>
+        /// The page size of the loaded record set, fixed when it starts: Load more and Load all go on
+        /// with the size its pages were read with, and a page size changed in Settings... applies from
+        /// the next Load records.
+        /// </summary>
+        private int _loadedPageSize;
+
         // ---- the one long operation that may run at a time ----
         private CancellationTokenSource _operation;
         private bool _reloadEntitiesWhenIdle;
@@ -128,6 +139,7 @@ namespace MyscotekDataCopier.UI
             _mirrorToXrmToolBoxLog = mirrorToXrmToolBoxLog;
             ShowMessage = ShowMessageBox;
             ShowPicker = picker => picker.ShowDialog(this);
+            ShowSettings = form => form.ShowDialog(this);
 
             // A design size so the docked layout is computed before XrmToolBox docks the control.
             Size = new Size(1100, 750);
@@ -153,6 +165,12 @@ namespace MyscotekDataCopier.UI
         /// A seam for the UI tests, which drive the dialog without a modal loop.
         /// </summary>
         internal Func<RelationshipPickerForm, DialogResult> ShowPicker { get; set; }
+
+        /// <summary>
+        /// Shows the settings dialog (Settings...) modally and returns its result (ShowDialog owned by
+        /// the tool). A seam for the UI tests, like <see cref="ShowPicker"/>.
+        /// </summary>
+        internal Func<CopierSettingsForm, DialogResult> ShowSettings { get; set; }
 
         // ---- read-only views of the state, for the UI tests ----
         internal UiLogger Logger => _logger;
@@ -394,6 +412,37 @@ namespace MyscotekDataCopier.UI
             _settings.CopyChildren = _copyChildren.Checked;
             SaveSettings();
             UpdateControlStates();   // Relationships... follows the 1:N and N:N option
+        }
+
+        /// <summary>Settings...: needs no connection (enabled whenever nothing runs).</summary>
+        private void OnSettingsClick(object sender, EventArgs e) => Guard("Changing the settings", ShowSettingsDialog);
+
+        /// <summary>
+        /// Opens the settings dialog with the never-create tables and the page size in use; OK saves
+        /// them at once and applies them: the entity list marks, Relationships... and the Copy refusal
+        /// follow the new list (no need to select the entity again), and the next Load records reads
+        /// pages of the new size.
+        /// </summary>
+        private void ShowSettingsDialog()
+        {
+            if (IsBusy) return;
+            // Names added in the dialog are checked against the source catalog when it is loaded.
+            IEnumerable<string> sourceTables = _entities.Count > 0 ? _entities.Select(e => e.LogicalName) : null;
+            using (var form = new CopierSettingsForm(CopyOptions.ParseNeverCreateEntities(_settings.NeverCreateEntities),
+                       _settings.EffectivePageSize, sourceTables))
+            {
+                if (ShowSettings(form) != DialogResult.OK) return;
+                int previousPageSize = _settings.EffectivePageSize;
+                _settings.NeverCreateEntities = string.Join(",", form.NeverCreateEntities);
+                _settings.PageSize = form.PageSize;
+                SaveSettings();
+
+                PopulateEntityList();    // the never-create marks
+                UpdateControlStates();   // Relationships... (Copy reads the list when it is pressed)
+                _logger.Write(LogLevel.Info, "Never-create tables: " + string.Join(", ", CopyOptions.ParseNeverCreateEntities(_settings.NeverCreateEntities)));
+                if (_settings.EffectivePageSize != previousPageSize)
+                    _logger.Write(LogLevel.Info, "Page size: " + _settings.EffectivePageSize.ToString(CultureInfo.CurrentCulture));
+            }
         }
 
         private CopyOptions BuildOptions()
@@ -643,6 +692,7 @@ namespace MyscotekDataCopier.UI
             _copyLookups.Enabled = !busy;
             _copyChildren.Enabled = !busy;
             _relationshipsButton.Enabled = !busy && connected && _copyChildren.Checked && _currentEntity != null && IsCopyable(_currentEntity);
+            _settingsButton.Enabled = !busy;
             _copyButton.Enabled = !busy && connected && _destinationService != null && _currentEntity != null && _selectedCount > 0;
             _cancelButton.Enabled = busy;
 
@@ -760,6 +810,7 @@ namespace MyscotekDataCopier.UI
         private void PopulateEntityList()
         {
             string filter = _entityFilter.Text.Trim();
+            HashSet<string> neverCreate = NeverCreateSet();
             _suppressEntitySelection = true;
             _entityList.BeginUpdate();
             try
@@ -769,7 +820,9 @@ namespace MyscotekDataCopier.UI
                 foreach (EntityInfo entity in _entities)
                 {
                     if (filter.Length > 0 && !ContainsText(entity.DisplayName, filter) && !ContainsText(entity.LogicalName, filter)) continue;
-                    string logicalName = entity.IsVirtual ? entity.LogicalName + VirtualMarker : entity.LogicalName;
+                    string logicalName = entity.LogicalName
+                                         + (entity.IsVirtual ? VirtualMarker : string.Empty)
+                                         + (neverCreate.Contains(entity.LogicalName) ? NeverCreateMarker : string.Empty);
                     items.Add(new ListViewItem(new[] { entity.DisplayName ?? entity.LogicalName, logicalName })
                     {
                         Name = entity.LogicalName,
@@ -956,7 +1009,7 @@ namespace MyscotekDataCopier.UI
             if (!continuing) StartRecordSet(entity, view);
 
             int generation = _generation;
-            int pageSize = _settings.EffectivePageSize;
+            int pageSize = _loadedPageSize;
             string fetchXml = _loadedFetchXml;
             string primaryId = entity.PrimaryIdAttribute;
             // A new record set also gets its column headers (display names), resolved off the UI thread
@@ -1011,6 +1064,7 @@ namespace MyscotekDataCopier.UI
             _loadedView = view;
             _loadedColumns = columns;
             _loadedFetchXml = fetchXml;
+            _loadedPageSize = _settings.EffectivePageSize;
             _nextPage = 1;
             _pagingCookie = null;
             _moreRecords = false;
@@ -1449,7 +1503,7 @@ namespace MyscotekDataCopier.UI
                 ShowMessage(
                     $"{entity.LogicalName} is in the never-create list ({NeverCreateList(options)}).\n\n" +
                     "Records of these entities are never created by this tool, so they cannot be copied. " +
-                    "The list is the NeverCreateEntities setting.",
+                    "Settings... changes the list.",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button1);
                 return;
             }
@@ -1573,14 +1627,15 @@ namespace MyscotekDataCopier.UI
                 PeerRecordsFound = summary.PeerRecordsFound,
                 AssociationsCreated = summary.AssociationsCreated,
                 AssociationsSkipped = summary.AssociationsSkipped,
-                AssociationsFailed = summary.AssociationsFailed
+                AssociationsFailed = summary.AssociationsFailed,
+                ConnectionMirrorsSkipped = summary.ConnectionMirrorsSkipped
             });
         }
 
         /// <summary>
         /// The progress label text, e.g. "3 / 25 - created 41, failed 1"; updated, skipped (existing
-        /// related records), child records found, peers found and the associations (created, skipped,
-        /// failed) are included when not zero.
+        /// related records), child records found, peers found, the associations (created, skipped,
+        /// failed) and the connection mirrors skipped are included when not zero.
         /// </summary>
         internal static string FormatProgress(CopyProgress progress)
         {
@@ -1595,6 +1650,7 @@ namespace MyscotekDataCopier.UI
             AppendCount(text, "associated", progress.AssociationsCreated);
             AppendCount(text, "associations skipped", progress.AssociationsSkipped);
             AppendCount(text, "associations failed", progress.AssociationsFailed);
+            AppendCount(text, "mirrors skipped", progress.ConnectionMirrorsSkipped);
             text.Append(", failed ").Append(progress.Failed.ToString(CultureInfo.CurrentCulture));
             return text.ToString();
         }
@@ -1627,6 +1683,8 @@ namespace MyscotekDataCopier.UI
             if (summary.AssociationsCreated > 0) lines.Add((LogLevel.Info, SummaryRow("Associations created", summary.AssociationsCreated)));
             if (summary.AssociationsSkipped > 0) lines.Add((LogLevel.Info, SummaryRow("Associations skipped", summary.AssociationsSkipped)));
             if (summary.AssociationsFailed > 0) lines.Add((LogLevel.Warning, SummaryRow("Associations failed", summary.AssociationsFailed)));
+            // Connection mirrors (SPEC 5.5), likewise only when there were any.
+            if (summary.ConnectionMirrorsSkipped > 0) lines.Add((LogLevel.Info, SummaryRow("Mirrors skipped", summary.ConnectionMirrorsSkipped)));
             lines.Add((LogLevel.Info, SummaryRow("State changes", summary.StateChanges)));
             lines.Add((LogLevel.Info, "  " + "Elapsed".PadRight(SummaryLabelWidth) + FormatElapsed(summary.Elapsed)));
             if (summary.Errors.Count > 0)

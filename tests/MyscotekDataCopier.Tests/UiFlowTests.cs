@@ -193,7 +193,7 @@ namespace MyscotekDataCopier.Tests
 
                     ListView entities = UiTestHost.Find<ListView>(control, "entityList");
                     Assert.Equal(new[] { "Account", "Contact", "User", "VAT Rate" }, entities.Items.Cast<ListViewItem>().Select(i => i.Text));
-                    Assert.Equal(new[] { "account", "contact", "systemuser", "new_vatrate (virtual)" },
+                    Assert.Equal(new[] { "account", "contact", "systemuser (never created)", "new_vatrate (virtual)" },   // systemuser: a default never-create table
                         entities.Items.Cast<ListViewItem>().Select(i => i.SubItems[1].Text));
                     Assert.Equal("new_vatrate", Assert.Single(entities.SelectedItems.Cast<ListViewItem>()).Name);
                     Assert.Contains("new_vatrate is a virtual table: its records can be listed but not copied.", UiTest.LogText(control));
@@ -214,6 +214,248 @@ namespace MyscotekDataCopier.Tests
                     Assert.Contains("Copy refused: new_vatrate is a virtual table.", log);
                     Assert.DoesNotContain("Copying 1", log);
                     Assert.Empty(scenario.Destination.Executed);
+                }
+            });
+        }
+
+        [Fact]
+        public void Settings_takes_team_off_the_never_create_list_saves_and_logs_it_and_Copy_then_copies_the_selected_team()
+        {
+            var scenario = new UiScenario { IncludeTeamEntity = true };
+            scenario.Settings.LastEntity = "team";
+            scenario.Settings.PageSize = 500;        // within the dialog's range: OK leaves it as it is
+            scenario.Settings.CopyChildren = true;   // so Relationships... shows that it follows the list too
+            UiTestHost.Run(() =>
+            {
+                using (DataCopierControl control = UiTest.NewControl(scenario.Settings, scenario.Save, scenario.Dialogs))
+                {
+                    control.UpdateConnection(scenario.Source, null, string.Empty, null);
+                    ComboBox views = UiTestHost.Find<ComboBox>(control, "viewCombo");
+                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count > 0, "the team views");
+                    ListView entities = UiTestHost.Find<ListView>(control, "entityList");
+                    Assert.Equal("team (never created)", entities.Items["team"].SubItems[1].Text);
+                    Assert.Contains("team is in the never-create list: its records can be listed but not copied.", UiTest.LogText(control));
+
+                    UiTestHost.Find<Button>(control, "loadAllButton").PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 1, "the teams");
+                    UiTestHost.Find<Button>(control, "selectAllButton").PerformClick();
+                    control.UpdateConnection(scenario.Destination, null, DataCopierControl.DestinationActionName, DataCopierControl.DestinationParameter);
+                    UiTestHost.Find<CheckBox>(control, "dryRunCheckBox").Checked = true;
+                    Button copy = UiTestHost.Find<Button>(control, "copyButton");
+                    Button relationships = UiTestHost.Find<Button>(control, "relationshipsButton");
+
+                    // 1. While team is in the list, Copy refuses it and there are no relationships to choose for it.
+                    Assert.False(relationships.Enabled);
+                    Assert.True(copy.Enabled);
+                    copy.PerformClick();
+                    UiTestHost.Pump();
+                    Assert.StartsWith("team is in the never-create list (businessunit, organization, systemuser, team, transactioncurrency).",
+                        Assert.Single(scenario.Dialogs.Messages));
+                    Assert.Contains("Copy refused: team is in the never-create list.", UiTest.LogText(control));
+                    Assert.DoesNotContain("] Copying 1", UiTest.LogText(control));
+                    scenario.Dialogs.Messages.Clear();
+                    int saves = scenario.SaveCount;
+
+                    // 2. Settings...: the list in use, one name per line; team taken out, OK.
+                    string shown = null;
+                    control.ShowSettings = form =>
+                    {
+                        ShowOffScreen(form, scenario.Dialogs);
+                        TextBox list = UiTestHost.Find<TextBox>(form, "neverCreateTextBox");
+                        shown = list.Text;
+                        list.Text = string.Join(Environment.NewLine, list.Lines.Where(line => line != "team"));
+                        UiTestHost.Find<Button>(form, "okButton").PerformClick();
+                        return form.DialogResult;
+                    };
+                    Button settings = UiTestHost.Find<Button>(control, "settingsButton");
+                    Assert.True(settings.Enabled);
+                    settings.PerformClick();
+
+                    Assert.Equal(string.Join(Environment.NewLine, "systemuser", "team", "businessunit", "organization", "transactioncurrency"), shown);
+                    const string WithoutTeam = "systemuser,businessunit,organization,transactioncurrency";
+                    Assert.Equal(WithoutTeam, control.Settings.NeverCreateEntities);
+                    Assert.Equal(saves + 1, scenario.SaveCount);   // saved at once
+                    Assert.Equal(WithoutTeam, scenario.LastSavedNeverCreateEntities);
+                    Assert.Equal(500, scenario.LastSavedPageSize);
+                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains("] Never-create tables: systemuser, businessunit, organization, transactioncurrency"),
+                        "the never-create line");
+                    Assert.DoesNotContain("Page size:", UiTest.LogText(control));   // not changed
+                    Assert.Empty(scenario.Dialogs.Messages);   // no name was added: nothing to ask
+
+                    // The marks and Relationships... follow the list at once; team stays selected with its records.
+                    Assert.Equal("team", entities.Items["team"].SubItems[1].Text);
+                    Assert.Equal("systemuser (never created)", entities.Items["systemuser"].SubItems[1].Text);
+                    Assert.Equal("team", Assert.Single(entities.SelectedItems.Cast<ListViewItem>()).Name);
+                    Assert.Equal(1, control.Records.Rows.Count);
+                    Assert.True(relationships.Enabled);
+
+                    // 3. Copy now copies the team (a dry run) without selecting it again.
+                    UiTestHost.Find<CheckBox>(control, "copyChildrenCheckBox").Checked = false;   // the team alone
+                    Assert.True(copy.Enabled);
+                    copy.PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && UiTest.LogText(control).Contains("---- Summary"), "the copy");
+
+                    string log = UiTest.LogText(control);
+                    Assert.Contains("] Copying 1 team record from (unnamed connection) to (unnamed connection)", log);
+                    Assert.Contains("; never created: businessunit, organization, systemuser, transactioncurrency", log);
+                    Assert.Contains($"] [DRY RUN] Would create team \"Sales Team\" ({scenario.Team.Id})", log);
+                    Assert.Equal("Dry run done: 1 / 1 - created 1, failed 0", UiTestHost.Find<Label>(control, "progressLabel").Text);
+                    Assert.Empty(scenario.Dialogs.Messages);
+                    Assert.Empty(scenario.Destination.Writes);
+                }
+            });
+        }
+
+        [Fact]
+        public void Settings_Reset_to_defaults_restores_the_five_defaults_and_a_name_that_is_not_a_source_table_is_kept_only_if_confirmed()
+        {
+            var scenario = new UiScenario();
+            scenario.Settings.NeverCreateEntities = "systemuser,businessunit";
+            UiTestHost.Run(() =>
+            {
+                using (DataCopierControl control = UiTest.NewControl(scenario.Settings, scenario.Save, scenario.Dialogs))
+                {
+                    control.UpdateConnection(scenario.Source, null, string.Empty, null);
+                    UiTestHost.PumpUntil(() => !control.IsBusy && UiTestHost.Find<ComboBox>(control, "viewCombo").Items.Count > 0, "the account views");
+                    Button settings = UiTestHost.Find<Button>(control, "settingsButton");
+
+                    // 1. Reset to defaults: the five defaults, one per line. They are never questioned, although
+                    //    this source's catalog (account, contact, systemuser) lacks most of them.
+                    string shown = null, reset = null;
+                    control.ShowSettings = form =>
+                    {
+                        ShowOffScreen(form, scenario.Dialogs);
+                        TextBox list = UiTestHost.Find<TextBox>(form, "neverCreateTextBox");
+                        shown = list.Text;
+                        UiTestHost.Find<Button>(form, "resetDefaultsButton").PerformClick();
+                        reset = list.Text;
+                        UiTestHost.Find<Button>(form, "okButton").PerformClick();
+                        return form.DialogResult;
+                    };
+                    settings.PerformClick();
+
+                    Assert.Equal("systemuser" + Environment.NewLine + "businessunit", shown);
+                    Assert.Equal(string.Join(Environment.NewLine, "systemuser", "team", "businessunit", "organization", "transactioncurrency"), reset);
+                    Assert.Equal("systemuser,team,businessunit,organization,transactioncurrency", control.Settings.NeverCreateEntities);
+                    Assert.Equal("systemuser,team,businessunit,organization,transactioncurrency", scenario.LastSavedNeverCreateEntities);
+                    Assert.Empty(scenario.Dialogs.Messages);
+                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains("] Never-create tables: systemuser, team, businessunit, organization, transactioncurrency"),
+                        "the defaults line");
+
+                    // 2. Names added that are not tables in the source are asked about: No drops one, Yes keeps the
+                    //    other. The list is read as the run reads it: trimmed, lower case, no blanks or duplicates, in order.
+                    var questions = new List<(string Text, MessageBoxButtons Buttons)>();
+                    control.ShowSettings = form =>
+                    {
+                        ShowOffScreen(form, scenario.Dialogs);
+                        form.ShowMessage = (text, buttons, icon, defaultButton) =>
+                        {
+                            questions.Add((text, buttons));
+                            return text.Contains("new_legacy") ? DialogResult.Yes : DialogResult.No;
+                        };
+                        TextBox list = UiTestHost.Find<TextBox>(form, "neverCreateTextBox");
+                        list.Text = string.Join(Environment.NewLine, "  Contact", "new_typo", string.Empty, list.Text, "SYSTEMUSER", "new_legacy");
+                        UiTestHost.Find<Button>(form, "okButton").PerformClick();
+                        return form.DialogResult;
+                    };
+                    settings.PerformClick();
+
+                    Assert.Equal(new[]
+                    {
+                        ("'new_typo' is not a table in the source environment. Keep it anyway?", MessageBoxButtons.YesNo),
+                        ("'new_legacy' is not a table in the source environment. Keep it anyway?", MessageBoxButtons.YesNo)
+                    }, questions);   // contact is a table of the source: not asked
+                    const string Saved = "contact,systemuser,team,businessunit,organization,transactioncurrency,new_legacy";
+                    Assert.Equal(Saved, control.Settings.NeverCreateEntities);
+                    Assert.Equal(Saved, scenario.LastSavedNeverCreateEntities);
+                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains(
+                        "] Never-create tables: contact, systemuser, team, businessunit, organization, transactioncurrency, new_legacy"), "the new line");
+                    Assert.Equal("contact (never created)", UiTestHost.Find<ListView>(control, "entityList").Items["contact"].SubItems[1].Text);
+
+                    // 3. Opened again and confirmed: a name the list already has is not asked about again.
+                    questions.Clear();
+                    control.ShowSettings = form =>
+                    {
+                        ShowOffScreen(form, scenario.Dialogs);
+                        form.ShowMessage = (text, buttons, icon, defaultButton) =>
+                        {
+                            questions.Add((text, buttons));
+                            return DialogResult.No;
+                        };
+                        UiTestHost.Find<Button>(form, "okButton").PerformClick();
+                        return form.DialogResult;
+                    };
+                    settings.PerformClick();
+                    Assert.Empty(questions);
+                    Assert.Equal(Saved, control.Settings.NeverCreateEntities);
+                    Assert.Empty(scenario.Dialogs.Messages);
+                }
+            });
+        }
+
+        [Fact]
+        public void The_page_size_set_in_Settings_is_saved_shown_again_and_read_by_the_next_Load_records_while_Load_more_keeps_its_set_size()
+        {
+            var scenario = new UiScenario();   // page size 3 in the settings
+            UiTestHost.Run(() =>
+            {
+                using (DataCopierControl control = UiTest.NewControl(scenario.Settings, scenario.Save, scenario.Dialogs))
+                {
+                    control.UpdateConnection(scenario.Source, null, string.Empty, null);
+                    UiTestHost.PumpUntil(() => !control.IsBusy && UiTestHost.Find<ComboBox>(control, "viewCombo").Items.Count > 0, "the account views");
+                    UiTestHost.Find<Button>(control, "loadRecordsButton").PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 3, "page 1");
+
+                    // 1. The dialog shows the page size within its range (3 is below it), 50 to 5000 in steps of 50; 250 is set.
+                    decimal shown = 0, minimum = 0, maximum = 0, step = 0;
+                    control.ShowSettings = form =>
+                    {
+                        ShowOffScreen(form, scenario.Dialogs);
+                        NumericUpDown pageSize = UiTestHost.Find<NumericUpDown>(form, "pageSizeUpDown");
+                        (shown, minimum, maximum, step) = (pageSize.Value, pageSize.Minimum, pageSize.Maximum, pageSize.Increment);
+                        pageSize.Value = 250;
+                        UiTestHost.Find<Button>(form, "okButton").PerformClick();
+                        return form.DialogResult;
+                    };
+                    Button settings = UiTestHost.Find<Button>(control, "settingsButton");
+                    settings.PerformClick();
+
+                    Assert.Equal((50m, 50m, 5000m, 50m), (shown, minimum, maximum, step));
+                    Assert.Equal(250, control.Settings.PageSize);
+                    Assert.Equal(250, scenario.LastSavedPageSize);
+                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains("] Page size: 250"), "the page size line");
+                    Assert.Contains("] Never-create tables: systemuser, team, businessunit, organization, transactioncurrency", UiTest.LogText(control));
+
+                    // 2. Load more goes on with the size the loaded set started with; the next Load records reads 250.
+                    UiTestHost.Find<Button>(control, "loadMoreButton").PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 5, "page 2");
+                    UiTestHost.Find<Button>(control, "loadRecordsButton").PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && scenario.PageSizes.Count == 3, "page 1 again");
+                    Assert.Equal(new[] { 3, 3, 250 }, scenario.PageSizes);
+                    Assert.Equal("5 records loaded (all)", UiTestHost.Find<Label>(control, "recordCountLabel").Text);
+
+                    // 3. Opened again it shows 250; Cancel saves and logs nothing.
+                    int saves = scenario.SaveCount;
+                    control.Logger.Flush();
+                    int lines = control.Logger.LineCount;
+                    control.ShowSettings = form =>
+                    {
+                        ShowOffScreen(form, scenario.Dialogs);
+                        NumericUpDown pageSize = UiTestHost.Find<NumericUpDown>(form, "pageSizeUpDown");
+                        shown = pageSize.Value;
+                        pageSize.Value = 1000;
+                        UiTestHost.Find<Button>(form, "cancelButton").PerformClick();
+                        return form.DialogResult;
+                    };
+                    settings.PerformClick();
+                    UiTestHost.Pump();
+                    control.Logger.Flush();
+
+                    Assert.Equal(250m, shown);
+                    Assert.Equal(250, control.Settings.PageSize);
+                    Assert.Equal(saves, scenario.SaveCount);
+                    Assert.Equal(lines, control.Logger.LineCount);
+                    Assert.Empty(scenario.Dialogs.Messages);
                 }
             });
         }
@@ -305,7 +547,7 @@ namespace MyscotekDataCopier.Tests
                         Assert.True(cancel.Enabled);
                         foreach (string input in new[] { "entityList", "viewCombo", "loadRecordsButton", "loadMoreButton",
                                                          "loadAllButton", "dryRunCheckBox", "preserveCreatedOnCheckBox", "bypassPluginsCheckBox",
-                                                         "copyLookupsCheckBox", "copyChildrenCheckBox", "relationshipsButton", "copyButton" })
+                                                         "copyLookupsCheckBox", "copyChildrenCheckBox", "relationshipsButton", "settingsButton", "copyButton" })
                         {
                             Assert.False(UiTestHost.Find<Control>(control, input).Enabled, input + " should be disabled while busy");
                         }
@@ -321,6 +563,7 @@ namespace MyscotekDataCopier.Tests
                         Assert.False(cancel.Enabled);
                         Assert.True(UiTestHost.Find<Button>(control, "loadMoreButton").Enabled);
                         Assert.True(UiTestHost.Find<Control>(control, "entityList").Enabled);
+                        Assert.True(UiTestHost.Find<Button>(control, "settingsButton").Enabled);
                     }
                 });
             }
@@ -864,6 +1107,19 @@ namespace MyscotekDataCopier.Tests
         }
 
         /// <summary>
+        /// Shows the settings dialog modeless and off-screen - the tests drive it without its modal loop,
+        /// as they do the relationship picker - with its questions answered by <paramref name="dialogs"/>.
+        /// </summary>
+        private static void ShowOffScreen(CopierSettingsForm form, DialogRecorder dialogs)
+        {
+            form.ShowMessage = dialogs.Show;
+            form.StartPosition = FormStartPosition.Manual;
+            form.Location = new Point(-3000, -3000);
+            form.Show();
+            UiTestHost.Pump(20);
+        }
+
+        /// <summary>
         /// A real mouse click in the middle of row <paramref name="rowIndex"/>'s Copy cell: move, down, up
         /// (the check box cell only reacts to a press that a mouse move put inside its glyph).
         /// </summary>
@@ -935,6 +1191,8 @@ namespace MyscotekDataCopier.Tests
             Source.Add(User);
             VatRate = TestData.Record("new_vatrate", Guid.NewGuid(), ("new_name", "20.0"));
             Source.Add(VatRate);
+            Team = TestData.Record("team", Guid.NewGuid(), ("name", "Sales Team"));
+            Source.Add(Team);
             ChildContact = TestData.Record("contact", Guid.NewGuid(), ("fullname", "Jane Child"), ("parentcustomerid", TestData.Ref("account", Accounts[0].Id)));
             Source.Add(ChildContact);
             GrandchildContact = TestData.Record("contact", Guid.NewGuid(), ("fullname", "Joe Grandchild"), ("parentcustomerid", TestData.Ref("contact", ChildContact.Id)));
@@ -956,6 +1214,7 @@ namespace MyscotekDataCopier.Tests
                 : retrieve.LogicalName == "account" ? AccountMetadata()
                 : retrieve.LogicalName == "contact" ? ContactMetadata()
                 : IncludeManyToMany && retrieve.LogicalName == ManyToManyName ? IntersectMetadata()
+                : IncludeTeamEntity && retrieve.LogicalName == "team" ? TeamMetadata()
                 : null;
         }
 
@@ -971,6 +1230,9 @@ namespace MyscotekDataCopier.Tests
         public Entity User { get; }
         public Entity VatRate { get; }
 
+        /// <summary>A team: listed with <see cref="IncludeTeamEntity"/>.</summary>
+        public Entity Team { get; }
+
         /// <summary>A contact of the first account (its parentcustomerid), and a contact of that contact.</summary>
         public Entity ChildContact { get; }
         public Entity GrandchildContact { get; }
@@ -978,6 +1240,12 @@ namespace MyscotekDataCopier.Tests
 
         /// <summary>Also list "VAT Rate" (new_vatrate), a virtual table: it has a data provider.</summary>
         public bool IncludeVirtualEntity { get; set; }
+
+        /// <summary>
+        /// Also list "Team" (team, in the default never-create list) with <see cref="Team"/>; the source and
+        /// the destination answer its metadata, so a copy of it can run once team is taken off the list.
+        /// </summary>
+        public bool IncludeTeamEntity { get; set; }
         public DialogRecorder Dialogs { get; } = new DialogRecorder();
 
         /// <summary>RetrieveAllEntities fails while this is set.</summary>
@@ -1004,7 +1272,18 @@ namespace MyscotekDataCopier.Tests
         public List<string> Cookies { get; } = new List<string>();
         public bool LastSavedDryRun { get; private set; }
 
-        public void Save(DataCopierSettings settings) => LastSavedDryRun = settings.DryRun;
+        /// <summary>How many times the settings were saved, and the never-create list and page size of the last save.</summary>
+        public int SaveCount { get; private set; }
+        public string LastSavedNeverCreateEntities { get; private set; }
+        public int LastSavedPageSize { get; private set; }
+
+        public void Save(DataCopierSettings settings)
+        {
+            SaveCount++;
+            LastSavedDryRun = settings.DryRun;
+            LastSavedNeverCreateEntities = settings.NeverCreateEntities;
+            LastSavedPageSize = settings.PageSize;
+        }
 
         private OrganizationResponse OnSourceRequest(OrganizationRequest request)
         {
@@ -1025,6 +1304,7 @@ namespace MyscotekDataCopier.Tests
                         vatRates.DataProviderId = new Guid("c9a7f5b6-2e3d-4a1b-9f80-7d6e5c4b3a21");   // an external data provider
                         metadata.Add(vatRates);
                     }
+                    if (IncludeTeamEntity) metadata.Add(Meta("team", "Team", "Team", "teamid", "name"));
                     var response = new RetrieveAllEntitiesResponse();
                     response.Results["EntityMetadata"] = metadata.ToArray();
                     return response;
@@ -1033,6 +1313,7 @@ namespace MyscotekDataCopier.Tests
                     MetadataThreads.Add(Thread.CurrentThread.Name);
                     if (retrieve.LogicalName == "account") return AccountMetadata();
                     if (retrieve.LogicalName == "contact") return ContactMetadata();
+                    if (IncludeTeamEntity && retrieve.LogicalName == "team") return TeamMetadata();
                     throw FakeOrganizationService.Fault(FakeOrganizationService.ObjectDoesNotExist, "Could not find an entity with specified entity name: " + retrieve.LogicalName);
                 default:
                     return null;
@@ -1073,6 +1354,7 @@ namespace MyscotekDataCopier.Tests
             List<Entity> all = entity == "account" ? Accounts
                 : entity == "systemuser" ? new List<Entity> { User }
                 : entity == "new_vatrate" ? new List<Entity> { VatRate }
+                : entity == "team" ? new List<Entity> { Team }
                 : new List<Entity>();
             List<Entity> rows = all.Skip((page - 1) * count).Take(count).Select(Clone).ToList();
             // The fake does not join: a view linking the primary contact (alias "pc") gets its column as an aliased value.
@@ -1142,6 +1424,18 @@ namespace MyscotekDataCopier.Tests
                     new UniqueIdentifierAttributeMetadata { LogicalName = ManyToManyName + "id" },
                     new UniqueIdentifierAttributeMetadata { LogicalName = "accountid" },
                     new UniqueIdentifierAttributeMetadata { LogicalName = "contactid" }
+                }));
+
+        /// <summary>A slice of team's metadata: its id and name.</summary>
+        private static OrganizationResponse TeamMetadata() =>
+            Metadata(new EntityMetadata { LogicalName = "team", SchemaName = "Team", DisplayName = new Microsoft.Xrm.Sdk.Label("Team", 1033) }
+                .With("PrimaryIdAttribute", "teamid")
+                .With("PrimaryNameAttribute", "name")
+                .With("IsIntersect", false)
+                .With("Attributes", new AttributeMetadata[]
+                {
+                    new UniqueIdentifierAttributeMetadata { LogicalName = "teamid", IsValidForCreate = true, IsValidForUpdate = false },
+                    new StringAttributeMetadata { LogicalName = "name", DisplayName = new Microsoft.Xrm.Sdk.Label("Team Name", 1033), IsValidForCreate = true, IsValidForUpdate = true }
                 }));
 
         private static OrganizationResponse Metadata(EntityMetadata metadata)

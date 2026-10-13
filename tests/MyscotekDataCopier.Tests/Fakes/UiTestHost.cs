@@ -13,9 +13,9 @@ namespace MyscotekDataCopier.Tests.Fakes
 {
     /// <summary>
     /// Hosts WinForms code for the UI tests: each test body runs on its own STA thread (WinForms needs
-    /// one) with XrmToolBox's toast-notification assembly replaced by an in-memory stub (see
-    /// <see cref="ToastNotificationsStub"/>), so constructing the real plugin control has no side
-    /// effects outside the test run.
+    /// one), one test at a time, with XrmToolBox's toast-notification assembly replaced by an
+    /// in-memory stub (see <see cref="ToastNotificationsStub"/>), so constructing the real plugin
+    /// control has no side effects outside the test run.
     /// </summary>
     public static class UiTestHost
     {
@@ -23,14 +23,34 @@ namespace MyscotekDataCopier.Tests.Fakes
         private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(60);
 
         /// <summary>
+        /// Lets one UI test run at a time in the whole test process, as if there were one UI thread
+        /// (XrmToolBox has one). xUnit runs the test classes in parallel and each UI test has its own
+        /// STA thread, but .NET Framework's TableLayoutPanel engine is not safe on two threads at once:
+        /// TableLayout.DistributeSize sizes every table's AutoSize and Percent rows and columns through
+        /// two process-wide singletons (MinSizeProxy / MaxSizeProxy: it sets their Strip, changes its
+        /// size and copies it back). A table laid out while another thread lays out a table can get that
+        /// table's row sizes - a row 0 or 172 px high, the next one a pixel off - and keeps them until
+        /// something lays it out again (UiLayoutTests failed this way in about half the full runs).
+        /// </summary>
+        private static readonly object OneUiTestAtATime = new object();
+
+        /// <summary>
         /// Runs <paramref name="body"/> on a new STA thread, inside a message loop, and rethrows whatever
         /// it throws. Like XrmToolBox's UI thread the body runs within Application.Run, so the thread
         /// keeps its WindowsFormsSynchronizationContext: awaited continuations come back to it (they run
         /// while <see cref="PumpUntil"/> pumps). A top-level Application.DoEvents would instead end a
         /// message loop, and WinForms uninstalls the context when the outermost loop ends. Touching a
-        /// control from another thread throws.
+        /// control from another thread throws. UI tests run one at a time (<see cref="OneUiTestAtATime"/>).
         /// </summary>
         public static void Run(Action body)
+        {
+            lock (OneUiTestAtATime)
+            {
+                RunOnStaThread(body);
+            }
+        }
+
+        private static void RunOnStaThread(Action body)
         {
             ToastNotificationsStub.Install();
             Control.CheckForIllegalCrossThreadCalls = true;

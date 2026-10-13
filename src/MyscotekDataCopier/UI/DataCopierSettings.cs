@@ -11,9 +11,10 @@ namespace MyscotekDataCopier.UI
     /// The tool's persisted settings (SPEC section 6). XrmToolBox's SettingsManager stores them as XML
     /// in %AppData%\MscrmTools\XrmToolBox\Settings\MyscotekDataCopier.xml, so the class is public with
     /// public read/write properties (XmlSerializer). Saved when the tool closes, whenever an option
-    /// checkbox changes and when the relationship picker is confirmed; <see cref="NeverCreateEntities"/>
-    /// and <see cref="PageSize"/> are only edited in that file (close XrmToolBox first: the tool
-    /// rewrites the file when it closes). Elements that no longer exist are ignored when the file is
+    /// checkbox changes and when the relationship picker or the settings dialog (Settings...:
+    /// <see cref="NeverCreateEntities"/> and <see cref="PageSize"/>, see <see cref="CopierSettingsForm"/>)
+    /// is confirmed. The file may also be edited by hand with XrmToolBox closed (the tool rewrites it
+    /// when it closes). Elements that no longer exist are ignored when the file is
     /// read, such as IncludePersonalViews before 1.2026.10.2 (personal views are now always listed).
     /// </summary>
     public class DataCopierSettings

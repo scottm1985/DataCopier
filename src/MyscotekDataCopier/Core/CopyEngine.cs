@@ -51,6 +51,12 @@ namespace MyscotekDataCopier.Core
         private const int QuoteActive = 1;
         private const string ActivityTypeCode = "activitytypecode";
 
+        // A connection is a pair: the master (ismaster true) and the mirror the platform creates with it,
+        // cross-linked through relatedconnectionid (SPEC 5.5).
+        private const string Connection = "connection";
+        private const string IsMaster = "ismaster";
+        private const string RelatedConnectionId = "relatedconnectionid";
+
         /// <summary>Why a lookup is blanked while lookups are not copied (SPEC 5.10).</summary>
         private const string NotCopiedProblem = "does not exist in destination (lookups not copied)";
 
@@ -84,10 +90,11 @@ namespace MyscotekDataCopier.Core
         private HashSet<string> _warnedRelationships;                 // entity|relationship: "not followed" warned once per run
         private Dictionary<AssociationKey, bool> _associations;       // pairs checked in (or associated by this run in) the destination
         private HashSet<string> _uncheckedRelationships;              // N:N relationships whose destination intersect could not be queried
+        private Dictionary<RecordKey, Guid> _mirrorMasters;           // connection mirrors met: the master that stands in for each (Guid.Empty: none)
         private List<string> _errors;
         private int _selectedIndex, _selectedTotal;
         private int _created, _updated, _skippedExisting, _failed, _lookupsBlanked, _lookupsBackfilled, _stateChanges, _childRecordsFound;
-        private int _peerRecordsFound, _associationsCreated, _associationsSkipped, _associationsFailed;
+        private int _peerRecordsFound, _associationsCreated, _associationsSkipped, _associationsFailed, _connectionMirrorsSkipped;
         private string _currentRecord;
         private IProgress<CopyProgress> _progress;
         private CancellationToken _cancellationToken;
@@ -303,6 +310,11 @@ namespace MyscotekDataCopier.Core
                     return EnsureResult.Unavailable;
                 case RecordState.InProgress:
                     return EnsureResult.Deferred;   // cycle: the caller omits the lookup and queues a backfill
+                case RecordState.Mirror:
+                    // A connection mirror met earlier in the run (SPEC 5.5): not read or counted again, only a short
+                    // line; its master stands in for it in this context too.
+                    if (isSelected || isChild || isPeer) Log(LogLevel.Info, depth, $"Already handled earlier in this run: connection {key.Id} ({MirrorDescription(key)})");
+                    return EnsureMaster(key, depth, isSelected, isChild, isPeer);
             }
 
             var record = new RecordContext(key, depth, isSelected, isChild, isPeer, CleanName(reference.Name));
@@ -398,6 +410,10 @@ namespace MyscotekDataCopier.Core
                 return EnsureResult.Unavailable;
             }
 
+            // A connection mirror is never written: the platform creates it with its master, which is copied
+            // in its place (SPEC 5.5).
+            if (IsConnectionMirror(key, source)) return SkipConnectionMirror(record, source);
+
             record.Name = FirstNonEmpty(PrimaryName(source, record), record.Name);
             Remember(key, record.Name);
             _currentRecord = DescribeOwner(key, record.Name);
@@ -446,6 +462,66 @@ namespace MyscotekDataCopier.Core
             ReportProgress();
             return stillExists ? EnsureResult.Available : EnsureResult.Unavailable;
         }
+
+        // =====================================================================================
+        // Connection mirrors (SPEC 5.5)
+        // =====================================================================================
+
+        /// <summary>
+        /// A connection whose source ismaster is false: the mirror the platform created with its master (record1
+        /// and record2 swapped). ismaster null or missing counts as a master.
+        /// </summary>
+        private static bool IsConnectionMirror(RecordKey key, Entity source) =>
+            key.Entity == Connection && source.Attributes.TryGetValue(IsMaster, out object value) && value is bool isMaster && !isMaster;
+
+        /// <summary>
+        /// A connection mirror met for the first time in the run. It is never created or updated - the platform
+        /// creates the mirror of every connection the copier creates, with a new GUID - but logged, counted, and
+        /// its master (the relatedconnectionid record) is ensured in its place (<see cref="EnsureMaster"/>). A
+        /// mirror that names no master, or a master that is a mirror too (corrupt data; the mirror itself
+        /// included), is a warning and nothing is copied: following it could loop.
+        /// </summary>
+        private EnsureResult SkipConnectionMirror(RecordContext record, Entity source)
+        {
+            RecordKey key = record.Key;
+            _states[key] = RecordState.Mirror;   // first, so that a master leading back to it is refused below
+            _connectionMirrorsSkipped++;
+            string prefix = _options.DryRun ? DryRunPrefix : string.Empty;
+            Guid master = IdOf(source, RelatedConnectionId);
+            if (master == Guid.Empty || IsMirror(master))
+            {
+                _mirrorMasters[key] = Guid.Empty;
+                Log(LogLevel.Warning, record.Depth, master == Guid.Empty
+                    ? $"{prefix}Skipped connection {key.Id}: mirror without relatedconnectionid, its master is unknown; not copied"
+                    : $"{prefix}Skipped connection {key.Id}: mirror of {master}, which is a mirror too; not copied");
+                return EnsureResult.Unavailable;
+            }
+
+            _mirrorMasters[key] = master;
+            Log(LogLevel.Info, record.Depth, $"{prefix}Skipped connection {key.Id}: mirror of {master}; the platform creates mirrors with their master");
+            return EnsureMaster(key, record.Depth, record.IsSelected, record.IsChild, record.IsPeer);
+        }
+
+        /// <summary>
+        /// Ensures the master of a connection mirror instead of the mirror, as the mirror was reached and at its
+        /// depth: a selected mirror makes its master selected (updated when it exists), a child mirror a child, a
+        /// peer a peer, a lookup's mirror a lookup target. The mirror's result is the master's as a selected or
+        /// child record; to a lookup or an association it is Unavailable, since nothing in the destination has the
+        /// mirror's GUID (the destination's mirror has another one).
+        /// </summary>
+        private EnsureResult EnsureMaster(RecordKey mirror, int depth, bool isSelected, bool isChild, bool isPeer)
+        {
+            Guid master = _mirrorMasters.TryGetValue(mirror, out Guid id) ? id : Guid.Empty;
+            if (master == Guid.Empty) return EnsureResult.Unavailable;
+            EnsureResult result = EnsureRecord(new EntityReference(Connection, master), depth, isSelected, isChild, isPeer);
+            return isSelected || isChild ? result : EnsureResult.Unavailable;
+        }
+
+        private bool IsMirror(Guid connectionId) =>
+            _states.TryGetValue(new RecordKey(Connection, connectionId), out RecordState state) && state == RecordState.Mirror;
+
+        private string MirrorDescription(RecordKey mirror) =>
+            _mirrorMasters.TryGetValue(mirror, out Guid master) && master != Guid.Empty ? $"mirror of {master}" : "mirror, master unknown";
 
         // =====================================================================================
         // Building the destination entity (SPEC 5.3)
@@ -1977,6 +2053,7 @@ namespace MyscotekDataCopier.Core
                 AssociationsCreated = _associationsCreated,
                 AssociationsSkipped = _associationsSkipped,
                 AssociationsFailed = _associationsFailed,
+                ConnectionMirrorsSkipped = _connectionMirrorsSkipped,
                 CurrentRecord = _currentRecord
             });
         }
@@ -1999,11 +2076,12 @@ namespace MyscotekDataCopier.Core
             _warnedRelationships = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             _associations = new Dictionary<AssociationKey, bool>();
             _uncheckedRelationships = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _mirrorMasters = new Dictionary<RecordKey, Guid>();
             _errors = new List<string>();
             _selectedIndex = 0;
             _selectedTotal = selectedTotal;
             _created = _updated = _skippedExisting = _failed = _lookupsBlanked = _lookupsBackfilled = _stateChanges = _childRecordsFound = 0;
-            _peerRecordsFound = _associationsCreated = _associationsSkipped = _associationsFailed = 0;
+            _peerRecordsFound = _associationsCreated = _associationsSkipped = _associationsFailed = _connectionMirrorsSkipped = 0;
             _currentRecord = null;
             _progress = progress;
             _cancellationToken = cancellationToken;
@@ -2024,6 +2102,7 @@ namespace MyscotekDataCopier.Core
             AssociationsCreated = _associationsCreated,
             AssociationsSkipped = _associationsSkipped,
             AssociationsFailed = _associationsFailed,
+            ConnectionMirrorsSkipped = _connectionMirrorsSkipped,
             Cancelled = cancelled,
             DryRun = _options.DryRun,
             Elapsed = elapsed,
@@ -2034,7 +2113,8 @@ namespace MyscotekDataCopier.Core
         // Private types
         // =====================================================================================
 
-        private enum RecordState { Unknown, InProgress, Created, Updated, Exists, Failed, Missing }
+        /// <summary>Per record for the run. Mirror: a connection mirror, never written; its master stands in for it (SPEC 5.5).</summary>
+        private enum RecordState { Unknown, InProgress, Created, Updated, Exists, Failed, Missing, Mirror }
 
         private enum EnsureResult { Available, Unavailable, Deferred }
 

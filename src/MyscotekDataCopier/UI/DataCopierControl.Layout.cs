@@ -85,6 +85,7 @@ namespace MyscotekDataCopier.UI
         private CheckBox _copyLookups;
         private CheckBox _copyChildren;
         private Button _relationshipsButton;
+        private Button _settingsButton;
         private TableLayoutPanel _actionRow;
         private Button _copyButton;
         private Button _cancelButton;
@@ -364,13 +365,18 @@ namespace MyscotekDataCopier.UI
             _copyLookups.CheckedChanged += OnOptionChanged;
             _copyChildren.CheckedChanged += OnOptionChanged;
 
+            // -- Settings... ends the first line: after Relationships... it would wrap onto a line of its
+            //    own on a small tool (800 x 500), and the records area would have to scroll --
+            _settingsButton = NewButton("settingsButton", "Settings...", OnSettingsClick);
+            _toolTip.SetToolTip(_settingsButton, "Edit the tables that are never created and the page size.");
+
             _optionsRow = NewRow("optionsRow");
             _optionsRow.Controls.AddRange(new Control[]
             {
-                _dryRun, _preserveCreatedOn, _bypassPlugins,
+                _dryRun, _preserveCreatedOn, _bypassPlugins, _settingsButton,
                 _copyLookups, _copyChildren, _relationshipsButton
             });
-            _optionsRow.SetFlowBreak(_bypassPlugins, true);   // the relationship options start the second line
+            _optionsRow.SetFlowBreak(_settingsButton, true);   // the relationship options start the second line
 
             // -- copy, cancel and the progress text, which takes the rest of the line ("..." and a
             //    tooltip with the whole text when it does not fit) --

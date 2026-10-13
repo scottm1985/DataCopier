@@ -112,6 +112,12 @@ namespace MyscotekDataCopier.Tests
                     Assert.False(relationships.Enabled);
                     Assert.Same(copyChildren.Parent, relationships.Parent);   // in the options row, next to the 1:N option
                     Assert.Equal("optionsRow", relationships.Parent.Name);
+                    // Settings... (never-create tables, page size): needs no connection; it ends the first options line
+                    Button settingsButton = UiTestHost.Find<Button>(control, "settingsButton");
+                    Assert.Equal("Settings...", settingsButton.Text);
+                    Assert.True(settingsButton.Enabled);
+                    Assert.Same(relationships.Parent, settingsButton.Parent);
+                    Assert.True(((FlowLayoutPanel)settingsButton.Parent).GetFlowBreak(settingsButton));
                     Button copy = UiTestHost.Find<Button>(control, "copyButton");
                     Assert.Equal("Copy selected records", copy.Text);
                     Assert.True(copy.Font.Bold);
@@ -172,6 +178,57 @@ namespace MyscotekDataCopier.Tests
                     Assert.True(control.Settings.PreserveCreatedOn);
                     Assert.True(control.Settings.CopyLookups);
                     Assert.False(control.Settings.CopyChildren);
+                }
+            });
+        }
+
+        [Fact]
+        public void Settings_dialog_opens_without_a_connection_with_the_list_in_use_and_questions_nothing_without_a_source_catalog()
+        {
+            var dialogs = new DialogRecorder();
+            var saved = new List<(string NeverCreate, int PageSize)>();
+            UiTestHost.Run(() =>
+            {
+                using (DataCopierControl control = UiTest.NewControl(new DataCopierSettings(), s => saved.Add((s.NeverCreateEntities, s.PageSize)), dialogs))
+                {
+                    string title = null, fontName = null, label = null, list = null;
+                    float fontSize = 0;
+                    Size size = Size.Empty;
+                    FormBorderStyle border = FormBorderStyle.None;
+                    bool multiline = false, acceptsReturn = false;
+                    decimal pageSize = 0;
+                    control.ShowSettings = form =>
+                    {
+                        (title, size, fontName, fontSize, border) = (form.Text, form.Size, form.Font.Name, form.Font.Size, form.FormBorderStyle);
+                        form.ShowMessage = dialogs.Show;
+                        form.StartPosition = FormStartPosition.Manual;
+                        form.Location = new Point(-3000, -3000);
+                        form.Show();
+                        label = UiTestHost.Find<Label>(form, "neverCreateLabel").Text;
+                        TextBox box = UiTestHost.Find<TextBox>(form, "neverCreateTextBox");
+                        (list, multiline, acceptsReturn) = (box.Text, box.Multiline, box.AcceptsReturn);
+                        pageSize = UiTestHost.Find<NumericUpDown>(form, "pageSizeUpDown").Value;
+                        box.AppendText(Environment.NewLine + "new_widget");
+                        UiTestHost.Find<Button>(form, "okButton").PerformClick();
+                        return form.DialogResult;
+                    };
+                    UiTestHost.Find<Button>(control, "settingsButton").PerformClick();
+                    UiTestHost.Pump();
+
+                    Assert.Equal("Data Copier settings", title);
+                    Assert.Equal(new Size(520, 420), size);
+                    Assert.Equal(("Segoe UI", 9f), (fontName, fontSize));
+                    Assert.Equal(FormBorderStyle.Sizable, border);
+                    Assert.Equal((true, true), (multiline, acceptsReturn));   // Enter starts a new line
+                    Assert.Equal("Tables that are never created (one logical name per line). Lookups to them are kept when the record already exists " +
+                                 "in the destination, otherwise blanked.", label);
+                    Assert.Equal(string.Join(Environment.NewLine, CopyOptions.DefaultNeverCreateEntities), list);
+                    Assert.Equal(500m, pageSize);
+                    Assert.Empty(dialogs.Messages);   // no source catalog to check new_widget against
+                    Assert.Equal(new[] { ("systemuser,team,businessunit,organization,transactioncurrency,new_widget", 500) }, saved);
+                    UiTestHost.PumpUntil(() => UiTestHost.Find<RichTextBox>(control, "logBox").Text.Contains(
+                        "] Never-create tables: systemuser, team, businessunit, organization, transactioncurrency, new_widget"), "the never-create line");
+                    Assert.Null(control.Service);
                 }
             });
         }
@@ -558,6 +615,29 @@ namespace MyscotekDataCopier.Tests
             Assert.Equal(LogLevel.Warning, lines[10].Level);
             Assert.Equal("  Associations skipped 7",
                 Assert.Single(DataCopierControl.BuildSummaryLines(new CopySummary { AssociationsSkipped = 7 }), l => l.Text.Contains("Associations")).Text);
+        }
+
+        [Fact]
+        public void Connection_mirrors_skipped_show_in_the_progress_label_and_the_summary_only_when_there_are_any()
+        {
+            // SPEC 5.5: a progress part and a summary row (after the N:N rows) only when not zero.
+            Assert.Equal("1 / 1 - created 3, children found 2, mirrors skipped 1, failed 0",
+                DataCopierControl.FormatProgress(new CopyProgress { SelectedIndex = 1, SelectedTotal = 1, Created = 3, ChildRecordsFound = 2, ConnectionMirrorsSkipped = 1 }));
+            Assert.DoesNotContain("mirrors", DataCopierControl.FormatProgress(new CopyProgress { SelectedIndex = 1, SelectedTotal = 1, Created = 3 }));
+
+            IList<(LogLevel Level, string Text)> lines = DataCopierControl.BuildSummaryLines(new CopySummary
+            {
+                SelectedTotal = 1, Created = 3, ChildRecordsFound = 2, AssociationsCreated = 1, ConnectionMirrorsSkipped = 1, Elapsed = TimeSpan.FromSeconds(2)
+            });
+            Assert.Equal(new[]
+            {
+                "  Child records found  2",
+                "  Associations created 1",
+                "  Mirrors skipped      1",
+                "  State changes        0"
+            }, lines.Select(l => l.Text).Skip(7).Take(4));
+            Assert.Equal(LogLevel.Info, lines[9].Level);
+            Assert.DoesNotContain(DataCopierControl.BuildSummaryLines(new CopySummary { SelectedTotal = 1, Created = 3 }), l => l.Text.Contains("Mirrors"));
         }
 
         [Fact]

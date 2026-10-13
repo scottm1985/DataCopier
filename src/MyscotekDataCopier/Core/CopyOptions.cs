@@ -70,16 +70,25 @@ namespace MyscotekDataCopier.Core
         public void SetNeverCreateEntities(string list)
         {
             NeverCreateEntities.Clear();
-            string[] parts = (list ?? string.Empty).Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (string part in parts)
+            foreach (string name in ParseNeverCreateEntities(list)) NeverCreateEntities.Add(name);
+        }
+
+        /// <summary>
+        /// The never-create entities a list in the settings format stands for (comma, semicolon,
+        /// space or line separated): its entries trimmed and lower-cased, without blanks and
+        /// duplicates, in their order - or <see cref="DefaultNeverCreateEntities"/> when it has none.
+        /// The one reading of the list: the run (<see cref="SetNeverCreateEntities"/>) and the UI alike.
+        /// </summary>
+        public static IReadOnlyList<string> ParseNeverCreateEntities(string list)
+        {
+            var names = new List<string>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string part in (list ?? string.Empty).Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 string name = part.Trim().ToLowerInvariant();
-                if (name.Length > 0) NeverCreateEntities.Add(name);
+                if (name.Length > 0 && seen.Add(name)) names.Add(name);
             }
-            if (NeverCreateEntities.Count == 0)
-            {
-                foreach (string name in DefaultNeverCreateEntities) NeverCreateEntities.Add(name);
-            }
+            return names.Count > 0 ? names.AsReadOnly() : DefaultNeverCreateEntities;
         }
     }
 }
