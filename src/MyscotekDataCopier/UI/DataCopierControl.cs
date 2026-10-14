@@ -893,8 +893,10 @@ namespace MyscotekDataCopier.UI
         // =====================================================================================
 
         /// <summary>
-        /// Makes the entity current (the grid is cleared) and loads its views: the system views, then
-        /// the personal views - always both, each sorted by name.
+        /// Makes the entity current (the grid is cleared) and loads its views: (All records) first - for
+        /// every entity, built from the columns its source metadata has -, then the system views, then the
+        /// personal views - always both, each sorted by name. The first saved view is selected, else
+        /// (All records).
         /// </summary>
         private async Task LoadViewsAsync(EntityInfo entity)
         {
@@ -912,12 +914,20 @@ namespace MyscotekDataCopier.UI
             else if (entity.IsVirtual)
                 _logger.Write(LogLevel.Warning, $"{entity.LogicalName} is a virtual table: its records can be listed but not copied.");
 
+            ISchemaProvider sourceSchema = SourceSchema(service);
             CancellationToken token = BeginOperation($"Loading the views of {entity.LogicalName}...");
             IList<ViewInfo> views;
+            ViewInfo allRecords;
+            string metadataProblem;
             bool loaded = false;
             try
             {
-                views = await Task.Run(() => ViewService.GetViews(service, entity.LogicalName, includePersonal: true, _logger));
+                (views, allRecords, metadataProblem) = await Task.Run(() =>
+                {
+                    IList<ViewInfo> saved = ViewService.GetViews(service, entity.LogicalName, includePersonal: true, _logger);
+                    (ViewInfo all, string problem) = AllRecordsView(entity, sourceSchema);
+                    return (saved, all, problem);
+                });
                 loaded = !token.IsCancellationRequested;
             }
             finally
@@ -932,15 +942,44 @@ namespace MyscotekDataCopier.UI
             if (!loaded) throw new OperationCanceledException("Loading views was cancelled.");
 
             if (views.Count == 0)
+                _logger.Write(LogLevel.Info, $"No views found for {entity.LogicalName}: only {ViewService.AllRecordsViewName} is listed.");
+            if (metadataProblem != null)
             {
-                views = new List<ViewInfo> { ViewService.CreateAllRecordsView(entity.LogicalName, entity.PrimaryIdAttribute, entity.PrimaryNameAttribute) };
-                _logger.Write(LogLevel.Info, $"{entity.LogicalName} has no usable views: {ViewService.AllRecordsViewName} is used.");
+                string column = string.IsNullOrWhiteSpace(entity.PrimaryNameAttribute) ? "primary id" : entity.PrimaryNameAttribute;
+                _logger.Write(LogLevel.Warning, $"Could not read the metadata of {entity.LogicalName} ({metadataProblem.TrimEnd('.', ' ')}): " +
+                                                $"{ViewService.AllRecordsViewName} shows its {column} column only.");
             }
-            PopulateViews(views);
+
+            var listed = new List<ViewInfo>(views.Count + 1) { allRecords };
+            listed.AddRange(views);
+            PopulateViews(listed, selectedIndex: views.Count > 0 ? 1 : 0);
             UpdateControlStates();
         }
 
-        private void PopulateViews(IList<ViewInfo> views)
+        /// <summary>
+        /// The entity's (All records) view, built from the columns its source metadata has (SPEC 5.7), with
+        /// a null problem. When that metadata cannot be read: the view of the primary id and name only (no
+        /// createdon, which some tables lack) and why. Runs on a worker thread (a metadata request, cached
+        /// by the provider for the headers and the copy too); never throws.
+        /// </summary>
+        private static (ViewInfo View, string Problem) AllRecordsView(EntityInfo entity, ISchemaProvider schema)
+        {
+            string problem;
+            try
+            {
+                EntitySchema metadata = schema.GetEntity(entity.LogicalName);
+                if (metadata != null) return (ViewService.CreateAllRecordsView(metadata), null);
+                problem = "not found";
+            }
+            catch (Exception ex)
+            {
+                problem = ex.Message;
+            }
+            return (ViewService.CreateAllRecordsView(entity.LogicalName, entity.PrimaryIdAttribute, entity.PrimaryNameAttribute, includeCreatedOn: false), problem);
+        }
+
+        /// <summary>Lists the views and selects the one at <paramref name="selectedIndex"/>.</summary>
+        private void PopulateViews(IList<ViewInfo> views, int selectedIndex)
         {
             _viewCombo.BeginUpdate();
             try
@@ -953,7 +992,7 @@ namespace MyscotekDataCopier.UI
                     widest = Math.Max(widest, TextRenderer.MeasureText(views[i].DisplayName ?? string.Empty, _viewCombo.Font).Width + SystemInformation.VerticalScrollBarWidth + 8);
                 }
                 _viewCombo.DropDownWidth = Math.Min(widest, 700);
-                _viewCombo.SelectedIndex = views.Count > 0 ? 0 : -1;
+                _viewCombo.SelectedIndex = views.Count > 0 ? selectedIndex : -1;
             }
             finally
             {

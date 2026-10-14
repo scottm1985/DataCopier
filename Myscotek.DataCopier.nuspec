@@ -5,7 +5,7 @@
          src\MyscotekDataCopier\Properties\AssemblyInfo.cs, or the Tool Library offers an update
          forever: build-package.ps1 refuses to pack when they differ. -->
     <id>Myscotek.DataCopier</id>
-    <version>1.2026.10.13</version>
+    <version>1.2026.10.14</version>
     <title>Data Copier</title>
     <authors>Myscotek</authors>
     <owners>Myscotek</owners>
@@ -28,6 +28,8 @@
       written to a colour-coded log.
     </description>
     <releaseNotes>
+      1.2026.10.14 - "(All records)" is always available in the view list for every table and works for tables without views.
+
       1.2026.10.13 - Settings dialog to edit the never-created tables and the page size (the entity list marks never-created tables); mirror connections are never created, which fixes duplicated connection pairs; test-suite reliability fix.
 
       1.2026.10.4 - Package fix only: the logo is served from the project site (no packed icon) so the Tool Library accepts the logo URL; same tool as 1.2026.10.3.

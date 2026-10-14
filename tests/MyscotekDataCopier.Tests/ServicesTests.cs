@@ -193,6 +193,89 @@ namespace MyscotekDataCopier.Tests
             Assert.Equal(new[] { "createdon" }, LayoutParser.Parse(view.LayoutXml).Select(c => c.Name));
         }
 
+        [Fact]
+        public void CreateAllRecordsView_from_a_schema_with_a_primary_name_and_createdon_has_the_original_shape()
+        {
+            var schema = new FakeSchemaProvider().Entity("account").DateTime("createdon").DateTime("modifiedon").Schema;
+
+            ViewInfo view = ViewService.CreateAllRecordsView(schema);
+
+            Assert.Equal(ViewService.AllRecordsViewName, view.Name);
+            Assert.Equal(Guid.Empty, view.Id);
+            Assert.False(view.IsPersonal);
+            Assert.Equal(   // createdon, not modifiedon
+                "<fetch><entity name=\"account\"><attribute name=\"name\" /><attribute name=\"accountid\" /><attribute name=\"createdon\" /><order attribute=\"name\" /></entity></fetch>",
+                view.FetchXml);
+            Assert.Equal(new[] { "name (300)", "createdon (125)" }, Cells(view));
+        }
+
+        [Fact]
+        public void CreateAllRecordsView_from_a_schema_without_a_primary_name_orders_by_createdon_descending()
+        {
+            var schema = new FakeSchemaProvider().Entity("new_log", primaryName: null).DateTime("createdon").Schema;
+
+            ViewInfo view = ViewService.CreateAllRecordsView(schema);
+
+            Assert.Equal(
+                "<fetch><entity name=\"new_log\"><attribute name=\"new_logid\" /><attribute name=\"createdon\" /><order attribute=\"createdon\" descending=\"true\" /></entity></fetch>",
+                view.FetchXml);
+            Assert.Equal(new[] { "createdon (125)" }, Cells(view));
+        }
+
+        [Fact]
+        public void CreateAllRecordsView_from_a_schema_without_createdon_uses_modifiedon_in_its_place()
+        {
+            var schema = new FakeSchemaProvider().Entity("new_log", primaryName: "new_name").DateTime("modifiedon").Schema;
+
+            ViewInfo view = ViewService.CreateAllRecordsView(schema);
+
+            Assert.Equal(
+                "<fetch><entity name=\"new_log\"><attribute name=\"new_name\" /><attribute name=\"new_logid\" /><attribute name=\"modifiedon\" /><order attribute=\"new_name\" /></entity></fetch>",
+                view.FetchXml);
+            Assert.Equal(new[] { "new_name (300)", "modifiedon (125)" }, Cells(view));
+
+            // Without a primary name either: the latest change first.
+            view = ViewService.CreateAllRecordsView(new FakeSchemaProvider().Entity("new_log", primaryName: null).DateTime("modifiedon").Schema);
+            Assert.Equal(
+                "<fetch><entity name=\"new_log\"><attribute name=\"new_logid\" /><attribute name=\"modifiedon\" /><order attribute=\"modifiedon\" descending=\"true\" /></entity></fetch>",
+                view.FetchXml);
+            Assert.Equal(new[] { "modifiedon (125)" }, Cells(view));
+        }
+
+        [Fact]
+        public void CreateAllRecordsView_from_a_schema_without_a_primary_name_createdon_or_modifiedon_shows_the_primary_id()
+        {
+            var schema = new FakeSchemaProvider().Entity("new_syncstate", primaryName: null).String("new_payload").Schema;
+
+            ViewInfo view = ViewService.CreateAllRecordsView(schema);
+
+            const string IdOnly = "<fetch><entity name=\"new_syncstate\"><attribute name=\"new_syncstateid\" /><order attribute=\"new_syncstateid\" /></entity></fetch>";
+            Assert.Equal(IdOnly, view.FetchXml);
+            Assert.Equal(new[] { "new_syncstateid (280)" }, Cells(view));   // the grid always has a column
+
+            // A primary name attribute the table does not have counts as none.
+            schema.PrimaryNameAttribute = "new_name";
+            Assert.Equal(IdOnly, ViewService.CreateAllRecordsView(schema).FetchXml);
+        }
+
+        [Fact]
+        public void CreateAllRecordsView_without_createdon_lists_the_primary_name_and_id_only()
+        {
+            ViewInfo view = ViewService.CreateAllRecordsView("systemuser", "systemuserid", "fullname", includeCreatedOn: false);
+
+            Assert.Equal(
+                "<fetch><entity name=\"systemuser\"><attribute name=\"fullname\" /><attribute name=\"systemuserid\" /><order attribute=\"fullname\" /></entity></fetch>",
+                view.FetchXml);
+            Assert.Equal(new[] { "fullname (300)" }, Cells(view));
+
+            view = ViewService.CreateAllRecordsView("new_log", "new_logid", null, includeCreatedOn: false);
+            Assert.Equal("<fetch><entity name=\"new_log\"><attribute name=\"new_logid\" /><order attribute=\"new_logid\" /></entity></fetch>", view.FetchXml);
+            Assert.Equal(new[] { "new_logid (280)" }, Cells(view));
+        }
+
+        /// <summary>The layout's columns as "name (width)".</summary>
+        private static IEnumerable<string> Cells(ViewInfo view) => LayoutParser.Parse(view.LayoutXml).Select(c => c.ToString());
+
         private static Entity View(string entity, Guid id, string name) =>
             new Entity(entity, id)
             {

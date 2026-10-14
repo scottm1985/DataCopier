@@ -44,9 +44,9 @@ namespace MyscotekDataCopier.Tests
                     ListView entities = UiTestHost.Find<ListView>(control, "entityList");
                     Assert.Equal(new[] { "Account", "Contact", "User" }, entities.Items.Cast<ListViewItem>().Select(i => i.Text));
                     Assert.Equal("account", Assert.Single(entities.SelectedItems.Cast<ListViewItem>()).Name);
-                    Assert.Equal("Active Accounts", views.Text);
-                    // The system views, then the personal views (always listed, after them whatever their names).
-                    Assert.Equal(new[] { "Active Accounts", "Active Accounts and Primary Contacts", "Accounts I Follow (personal)" },
+                    Assert.Equal("Active Accounts", views.Text);   // the first saved view is selected
+                    // (All records) first, then the system views, then the personal views (always listed, after them whatever their names).
+                    Assert.Equal(new[] { "(All records)", "Active Accounts", "Active Accounts and Primary Contacts", "Accounts I Follow (personal)" },
                         views.Items.Cast<object>().Select(views.GetItemText));
                     Assert.Equal("Source: (unnamed connection)", UiTestHost.FindToolItem<ToolStripLabel>(control, "sourceLabel").Text);
                     Assert.Contains("3 entities loaded from the source.", UiTest.LogText(control));
@@ -155,7 +155,8 @@ namespace MyscotekDataCopier.Tests
                     control.UpdateConnection(scenario.Source, null, string.Empty, null);
                     ComboBox views = UiTestHost.Find<ComboBox>(control, "viewCombo");
                     UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count > 0, "the systemuser views");
-                    Assert.Equal("(All records)", views.Text);   // no saved views: synthesised
+                    Assert.Equal("(All records)", Assert.Single(views.Items.Cast<object>().Select(views.GetItemText)));   // no saved views: (All records) only
+                    Assert.Equal("(All records)", views.Text);
                     Assert.Contains("systemuser is in the never-create list: its records can be listed but not copied.", UiTest.LogText(control));
 
                     UiTestHost.Find<Button>(control, "loadAllButton").PerformClick();
@@ -799,8 +800,8 @@ namespace MyscotekDataCopier.Tests
                 {
                     control.UpdateConnection(scenario.Source, null, string.Empty, null);
                     ComboBox views = UiTestHost.Find<ComboBox>(control, "viewCombo");
-                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count == 3, "the account views");   // two system views, then a personal view
-                    views.SelectedIndex = 1;
+                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count == 4, "the account views");   // (All records), two system views, a personal view
+                    views.SelectedIndex = 2;
                     Assert.Equal("Active Accounts and Primary Contacts", views.Text);   // name + pc.emailaddress1
 
                     Button loadRecords = UiTestHost.Find<Button>(control, "loadRecordsButton");
@@ -828,6 +829,71 @@ namespace MyscotekDataCopier.Tests
                     Assert.Equal(new[] { "Copy", "Account Name", "Email (Primary Contact)" },
                         grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Visible).Select(c => c.HeaderText));
                     Assert.Equal(2, scenario.MetadataRequests.Count);
+                    Assert.Empty(scenario.Dialogs.Messages);
+                }
+            });
+        }
+
+        [Fact]
+        public void All_records_is_listed_for_every_table_with_only_the_columns_it_has_and_loads_like_a_view()
+        {
+            var scenario = new UiScenario { IncludeBareEntity = true };
+            scenario.Settings.LastEntity = "new_syncstate";
+            UiTestHost.Run(() =>
+            {
+                using (DataCopierControl control = UiTest.NewControl(scenario.Settings, scenario.Save, scenario.Dialogs))
+                {
+                    // 1. A table without views, primary name, createdon or modifiedon: (All records) only, which
+                    //    fetches and shows its primary id (headed with the attribute's display name).
+                    control.UpdateConnection(scenario.Source, null, string.Empty, null);
+                    ComboBox views = UiTestHost.Find<ComboBox>(control, "viewCombo");
+                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count > 0, "the new_syncstate views");
+                    Assert.Equal("(All records)", Assert.Single(views.Items.Cast<object>().Select(views.GetItemText)));
+                    Assert.Equal("(All records)", views.Text);
+                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains("] No views found for new_syncstate: only (All records) is listed."), "the no-views line");
+
+                    Button loadRecords = UiTestHost.Find<Button>(control, "loadRecordsButton");
+                    loadRecords.PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 1, "the sync state");
+                    XElement fetched = XElement.Parse(Assert.Single(scenario.Fetches)).Element("entity");
+                    Assert.Equal(new[] { "new_syncstateid" }, fetched.Elements("attribute").Select(a => (string)a.Attribute("name")));
+                    Assert.Equal("new_syncstateid", (string)fetched.Element("order").Attribute("attribute"));
+
+                    DataGridView grid = UiTestHost.Find<DataGridView>(control, "recordGrid");
+                    DataGridViewColumn column = Assert.Single(grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Visible).Skip(1));   // after Copy
+                    Assert.Equal("Sync State", column.HeaderText);
+                    Assert.Equal("new_syncstateid", column.ToolTipText);
+                    Assert.Equal(280, column.Width);
+                    Assert.Equal(scenario.SyncState.Id.ToString(), grid.Rows[0].Cells[column.Index].Value);
+
+                    // 2. A table with views: (All records) comes first (the first saved view stays selected) and,
+                    //    chosen, loads page by page like any view.
+                    ListView entities = UiTestHost.Find<ListView>(control, "entityList");
+                    entities.Items["account"].Selected = true;
+                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count == 4, "the account views");
+                    Assert.Equal("Active Accounts", views.Text);
+                    views.SelectedIndex = 0;
+                    Assert.Equal("(All records)", views.Text);
+                    loadRecords.PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 3, "page 1");
+                    UiTestHost.Find<Button>(control, "loadMoreButton").PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 5, "page 2");
+                    Assert.Equal("5 records loaded (all)", UiTestHost.Find<Label>(control, "recordCountLabel").Text);
+                    fetched = XElement.Parse(scenario.Fetches.Last()).Element("entity");
+                    Assert.Equal(new[] { "name", "accountid" }, fetched.Elements("attribute").Select(a => (string)a.Attribute("name")));   // no createdon in its metadata
+                    Assert.Equal(new[] { "Copy", "Account Name" }, grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Visible).Select(c => c.HeaderText));
+
+                    // 3. Metadata that cannot be read (the source does not answer it for systemuser): the primary
+                    //    name and id only - no createdon - and a warning.
+                    entities.Items["systemuser"].Selected = true;
+                    UiTestHost.PumpUntil(() => !control.IsBusy && views.Items.Count == 1, "the systemuser views");
+                    UiTestHost.PumpUntil(() => UiTest.LogText(control).Contains(
+                        "] Could not read the metadata of systemuser (not found): (All records) shows its fullname column only."), "the warning");
+                    loadRecords.PerformClick();
+                    UiTestHost.PumpUntil(() => !control.IsBusy && control.Records.Rows.Count == 1, "the user");
+                    fetched = XElement.Parse(scenario.Fetches.Last()).Element("entity");
+                    Assert.Equal(new[] { "fullname", "systemuserid" }, fetched.Elements("attribute").Select(a => (string)a.Attribute("name")));
+                    Assert.Equal("fullname", (string)fetched.Element("order").Attribute("attribute"));
                     Assert.Empty(scenario.Dialogs.Messages);
                 }
             });
@@ -1193,6 +1259,8 @@ namespace MyscotekDataCopier.Tests
             Source.Add(VatRate);
             Team = TestData.Record("team", Guid.NewGuid(), ("name", "Sales Team"));
             Source.Add(Team);
+            SyncState = TestData.Record("new_syncstate", Guid.NewGuid(), ("new_payload", "{}"));
+            Source.Add(SyncState);
             ChildContact = TestData.Record("contact", Guid.NewGuid(), ("fullname", "Jane Child"), ("parentcustomerid", TestData.Ref("account", Accounts[0].Id)));
             Source.Add(ChildContact);
             GrandchildContact = TestData.Record("contact", Guid.NewGuid(), ("fullname", "Joe Grandchild"), ("parentcustomerid", TestData.Ref("contact", ChildContact.Id)));
@@ -1246,6 +1314,16 @@ namespace MyscotekDataCopier.Tests
         /// the destination answer its metadata, so a copy of it can run once team is taken off the list.
         /// </summary>
         public bool IncludeTeamEntity { get; set; }
+
+        /// <summary>
+        /// Also list "Sync State" (new_syncstate) with <see cref="SyncState"/>: a table without views whose
+        /// metadata (the source answers it) has no primary name, createdon or modifiedon.
+        /// </summary>
+        public bool IncludeBareEntity { get; set; }
+
+        /// <summary>A sync state: listed with <see cref="IncludeBareEntity"/>.</summary>
+        public Entity SyncState { get; }
+
         public DialogRecorder Dialogs { get; } = new DialogRecorder();
 
         /// <summary>RetrieveAllEntities fails while this is set.</summary>
@@ -1266,6 +1344,9 @@ namespace MyscotekDataCopier.Tests
 
         /// <summary>The name of the thread each of those requests ran on (null for a thread-pool thread).</summary>
         public List<string> MetadataThreads { get; } = new List<string>();
+
+        /// <summary>The FetchXML of each page asked for, in order (filled on the worker thread: read it when nothing runs).</summary>
+        public List<string> Fetches { get; } = new List<string>();
 
         public List<int> PagesRequested { get; } = new List<int>();
         public List<int> PageSizes { get; } = new List<int>();
@@ -1305,6 +1386,7 @@ namespace MyscotekDataCopier.Tests
                         metadata.Add(vatRates);
                     }
                     if (IncludeTeamEntity) metadata.Add(Meta("team", "Team", "Team", "teamid", "name"));
+                    if (IncludeBareEntity) metadata.Add(Meta("new_syncstate", "new_SyncState", "Sync State", "new_syncstateid", null));
                     var response = new RetrieveAllEntitiesResponse();
                     response.Results["EntityMetadata"] = metadata.ToArray();
                     return response;
@@ -1314,6 +1396,7 @@ namespace MyscotekDataCopier.Tests
                     if (retrieve.LogicalName == "account") return AccountMetadata();
                     if (retrieve.LogicalName == "contact") return ContactMetadata();
                     if (IncludeTeamEntity && retrieve.LogicalName == "team") return TeamMetadata();
+                    if (IncludeBareEntity && retrieve.LogicalName == "new_syncstate") return SyncStateMetadata();
                     throw FakeOrganizationService.Fault(FakeOrganizationService.ObjectDoesNotExist, "Could not find an entity with specified entity name: " + retrieve.LogicalName);
                 default:
                     return null;
@@ -1335,6 +1418,7 @@ namespace MyscotekDataCopier.Tests
                 case QueryExpression _:
                     return null;                     // systemform, child records: evaluated over the store
                 case FetchExpression fetch:
+                    Fetches.Add(fetch.Query);
                     return Page(XElement.Parse(fetch.Query));
                 default:
                     return null;
@@ -1355,6 +1439,7 @@ namespace MyscotekDataCopier.Tests
                 : entity == "systemuser" ? new List<Entity> { User }
                 : entity == "new_vatrate" ? new List<Entity> { VatRate }
                 : entity == "team" ? new List<Entity> { Team }
+                : entity == "new_syncstate" ? new List<Entity> { SyncState }
                 : new List<Entity>();
             List<Entity> rows = all.Skip((page - 1) * count).Take(count).Select(Clone).ToList();
             // The fake does not join: a view linking the primary contact (alias "pc") gets its column as an aliased value.
@@ -1436,6 +1521,17 @@ namespace MyscotekDataCopier.Tests
                 {
                     new UniqueIdentifierAttributeMetadata { LogicalName = "teamid", IsValidForCreate = true, IsValidForUpdate = false },
                     new StringAttributeMetadata { LogicalName = "name", DisplayName = new Microsoft.Xrm.Sdk.Label("Team Name", 1033), IsValidForCreate = true, IsValidForUpdate = true }
+                }));
+
+        /// <summary>new_syncstate's metadata: its id and a payload column - no primary name, createdon or modifiedon.</summary>
+        private static OrganizationResponse SyncStateMetadata() =>
+            Metadata(new EntityMetadata { LogicalName = "new_syncstate", SchemaName = "new_SyncState", DisplayName = new Microsoft.Xrm.Sdk.Label("Sync State", 1033) }
+                .With("PrimaryIdAttribute", "new_syncstateid")
+                .With("IsIntersect", false)
+                .With("Attributes", new AttributeMetadata[]
+                {
+                    new UniqueIdentifierAttributeMetadata { LogicalName = "new_syncstateid", DisplayName = new Microsoft.Xrm.Sdk.Label("Sync State", 1033) },
+                    new StringAttributeMetadata { LogicalName = "new_payload", DisplayName = new Microsoft.Xrm.Sdk.Label("Payload", 1033) }
                 }));
 
         private static OrganizationResponse Metadata(EntityMetadata metadata)

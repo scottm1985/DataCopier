@@ -48,9 +48,11 @@ every other assembly it uses.
    XrmToolBox connection (status bar, tab title) stays the source. If the
    destination looks like the same organisation as the source, you are asked to confirm before
    anything is copied.
-3. **Pick an entity and a view.** Select an entity: its system views are listed in **View**, then
-   your personal views (suffixed `(personal)`), each sorted by name. An entity without views gets an
-   `(All records)` view.
+3. **Pick an entity and a view.** Select an entity: **View** lists `(All records)`, then its system
+   views, then your personal views (suffixed `(personal)`), each sorted by name; the first saved view
+   is selected. `(All records)` is always available and works for any table, including tables without
+   views: it lists every record with the columns the table has (its name and created-on date, when it
+   has them).
 4. **Load the records.** **Load records** loads the first page of the view (500 records by default),
    **Load more** the next page, **Load all** every page until done or until you press **Cancel**;
    the count at the right of the filter box says how many are loaded and whether there are more.

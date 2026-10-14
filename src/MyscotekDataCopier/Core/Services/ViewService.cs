@@ -4,10 +4,11 @@ using System.Linq;
 using System.Xml.Linq;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
+using MyscotekDataCopier.Core.Schema;
 
 namespace MyscotekDataCopier.Core.Services
 {
-    /// <summary>A system view (savedquery) or personal view (userquery).</summary>
+    /// <summary>A system view (savedquery), a personal view (userquery) or the synthesised "(All records)" view (Id = Guid.Empty).</summary>
     public sealed class ViewInfo
     {
         public Guid Id { get; set; }
@@ -25,7 +26,7 @@ namespace MyscotekDataCopier.Core.Services
     /// <summary>Reads the views of an entity for the view picker.</summary>
     public static class ViewService
     {
-        /// <summary>Name of the view the UI synthesises when an entity has no usable views.</summary>
+        /// <summary>Name of the view the UI synthesises and lists first for every entity (SPEC 5.7).</summary>
         public const string AllRecordsViewName = "(All records)";
 
         /// <summary>
@@ -68,26 +69,57 @@ namespace MyscotekDataCopier.Core.Services
         }
 
         /// <summary>
-        /// The "(All records)" view for an entity without usable views:
-        /// fetch = primary name + primary id + createdon ordered by primary name; layout = primary name
-        /// and createdon columns.
+        /// The "(All records)" view without metadata (the original shape): fetch = primary name + primary
+        /// id + createdon ordered by primary name (createdon descending without one); layout = primary
+        /// name and createdon columns. Some tables have no createdon: when the metadata is known use
+        /// <see cref="CreateAllRecordsView(EntitySchema)"/>.
         /// </summary>
-        public static ViewInfo CreateAllRecordsView(string entity, string primaryIdAttribute, string primaryNameAttribute)
+        public static ViewInfo CreateAllRecordsView(string entity, string primaryIdAttribute, string primaryNameAttribute) =>
+            CreateAllRecordsView(entity, primaryIdAttribute, primaryNameAttribute, includeCreatedOn: true);
+
+        /// <summary>
+        /// As <see cref="CreateAllRecordsView(string, string, string)"/>; without createdon when
+        /// <paramref name="includeCreatedOn"/> is false: the primary id and name only, ordered by the name
+        /// (else the id) - what the UI lists when the entity's metadata cannot be read.
+        /// </summary>
+        public static ViewInfo CreateAllRecordsView(string entity, string primaryIdAttribute, string primaryNameAttribute, bool includeCreatedOn) =>
+            Build(entity, primaryIdAttribute, primaryNameAttribute, includeCreatedOn ? "createdon" : null);
+
+        /// <summary>
+        /// The "(All records)" view built from the columns the table has (SPEC 5.7): the primary id always;
+        /// the primary name when the table has that attribute; the date column - createdon, else modifiedon
+        /// - when it has one. Ordered by the primary name, else the date column descending, else the
+        /// primary id. Layout: the primary name (300) and the date column (125); the primary id (280) when
+        /// there is neither, so the grid always has a column.
+        /// </summary>
+        public static ViewInfo CreateAllRecordsView(EntitySchema schema)
+        {
+            if (schema == null) throw new ArgumentNullException(nameof(schema));
+            string primaryName = Has(schema, schema.PrimaryNameAttribute) ? schema.PrimaryNameAttribute : null;
+            string date = Has(schema, "createdon") ? "createdon" : Has(schema, "modifiedon") ? "modifiedon" : null;
+            return Build(schema.LogicalName, schema.PrimaryIdAttribute, primaryName, date);
+        }
+
+        /// <summary>The "(All records)" view of the given columns (<paramref name="dateAttribute"/> may be null).</summary>
+        private static ViewInfo Build(string entity, string primaryIdAttribute, string primaryNameAttribute, string dateAttribute)
         {
             if (string.IsNullOrWhiteSpace(entity)) throw new ArgumentException("An entity logical name is required.", nameof(entity));
             string primaryId = string.IsNullOrWhiteSpace(primaryIdAttribute) ? entity + "id" : primaryIdAttribute;
             bool hasName = !string.IsNullOrWhiteSpace(primaryNameAttribute);
+            bool hasDate = !string.IsNullOrWhiteSpace(dateAttribute);
 
             var entityElement = new XElement("entity", new XAttribute("name", entity));
             if (hasName) entityElement.Add(Attribute(primaryNameAttribute));
-            entityElement.Add(Attribute(primaryId), Attribute("createdon"));
-            entityElement.Add(hasName
-                ? new XElement("order", new XAttribute("attribute", primaryNameAttribute))
-                : new XElement("order", new XAttribute("attribute", "createdon"), new XAttribute("descending", "true")));
+            entityElement.Add(Attribute(primaryId));
+            if (hasDate) entityElement.Add(Attribute(dateAttribute));
+            entityElement.Add(hasName ? new XElement("order", new XAttribute("attribute", primaryNameAttribute))
+                : hasDate ? new XElement("order", new XAttribute("attribute", dateAttribute), new XAttribute("descending", "true"))
+                : new XElement("order", new XAttribute("attribute", primaryId)));
 
             var row = new XElement("row", new XAttribute("name", "result"), new XAttribute("id", primaryId));
             if (hasName) row.Add(Cell(primaryNameAttribute, 300));
-            row.Add(Cell("createdon", 125));
+            if (hasDate) row.Add(Cell(dateAttribute, 125));
+            if (!hasName && !hasDate) row.Add(Cell(primaryId, 280));
             var grid = new XElement("grid",
                 new XAttribute("name", "resultset"),
                 new XAttribute("jump", hasName ? primaryNameAttribute : primaryId),
@@ -131,6 +163,9 @@ namespace MyscotekDataCopier.Core.Services
                 .Where(v => !string.IsNullOrWhiteSpace(v.FetchXml))
                 .ToList();
         }
+
+        private static bool Has(EntitySchema schema, string attribute) =>
+            !string.IsNullOrWhiteSpace(attribute) && schema.Attributes != null && schema.Attributes.ContainsKey(attribute);
 
         private static XElement Attribute(string name) => new XElement("attribute", new XAttribute("name", name));
 
